@@ -1,51 +1,25 @@
-# RPilot
+# RPilot / Gremlin
 
-Aplikacja mobilna i agent na Raspberry Pi do sterowania robotem w sieci lokalnej.
+Aplikacja mobilna do robota [Gremlin](https://github.com/frykol/gremlin/tree/websocket-rewrite).
 
-Przy starcie telefon wysyła **broadcast UDP**. Pi odpowiada swoim adresem. Aplikacja łączy się sama i jedzie po **UDP** (drążek). Ten sam agent hostuje gotowy panel WWW i REST.
+Na Pi Gremlin już hostuje panel (`site/`, port **3000**) i kanał sterowania **WebSocket :8765**. Ta aplikacja przy starcie szuka robota broadcastem UDP, łączy się z tym kanałem i wysyła te same pakiety silników co zakładka Control:
 
-## Architektura
-
-```
-telefon (RPilot)  --UDP broadcast :45454-->  Raspberry Pi
-                  <--RPILOT_HERE + IP------
-                  --UDP JSON :45455------->  napęd (GPIO albo symulacja)
-                  --HTTP :8742------------>  status, komendy, panel
+```json
+{ "type": "motor", "channel": 0, "pwm": 1500 }
 ```
 
-- `mobile/` — aplikacja Expo (Android / iOS / web). Na telefonie discovery i sterowanie idą UDP.
-- `rpi/` — agent Pythona: discovery, UDP, WebSocket, REST, PWA instalowalna z przeglądarki.
+Mecanum: góra/dół = jazda, lewo/prawo = ślizg, przyciski = obrót. Mapowanie kół bierze z `GET /api/robot-config` (`motors` w `config.json`).
 
-Protokół sterowania jest jeden: `{ "t": "drive", "x": 0.2, "y": 0.8, "seq": 12 }`. `x` to skręt, `y` to jazda. Brak pakietów przez 350 ms zatrzymuje silniki.
+## Na Raspberry Pi (prawdziwy Gremlin)
 
-## Raspberry Pi
-
-Na Pi (albo na komputerze deweloperskim):
+1. Odpal Gremlina jak zwykle (`python -m src.main` / panel na `:3000`, WS na `:8765`).
+2. Obok, żeby telefon znalazł Pi sam:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r rpi/requirements.txt
-python rpi/rpilot_agent.py --host 0.0.0.0 --port 8742
+python rpi/gremlin_discover.py
 ```
 
-Panel: `http://<ip-maliny>:8742`  
-Na telefonie: **Zainstaluj aplikację** / Dodaj do ekranu głównego (PWA) albo zbuduj APK z katalogu `mobile`.
-
-Autostart (systemd): skopiuj `rpi/rpilot.service` do `/etc/systemd/system/`, popraw ścieżki, potem `systemctl enable --now rpilot`.
-
-### GPIO
-
-Bez `gpiozero` agent pracuje w **symulacji** (widać pozę na arenie). Na Pi z mostkiem L298N:
-
-```
-RPILOT_LEFT_FWD=17
-RPILOT_LEFT_REV=18
-RPILOT_RIGHT_FWD=22
-RPILOT_RIGHT_REV=23
-```
-
-Inne zmienne: `RPILOT_NAME`, `RPILOT_HTTP_PORT`, `RPILOT_DISCOVER_PORT`, `RPILOT_CONTROL_PORT`.
+Sidecar tylko odpowiada na `GREMLIN_DISCOVER` (UDP **45454**) adresem i portami. Sterowanie idzie prosto do Gremlina na `:8765` — nie zajmuje połączenia WS.
 
 ## Aplikacja mobilna
 
@@ -55,43 +29,36 @@ npm install
 npx expo start
 ```
 
-APK do wgrania na telefon (wymaga konta Expo):
+APK: `cd mobile && npx eas build -p android --profile preview`
+
+Przy starcie: ostatni adres → broadcast UDP → `ws://<ip>:8765`.
+
+W przeglądarce nie ma UDP; wtedy używany jest HTTP/WS (ten sam panel co w podglądzie).
+
+Przycisk **Panel Gremlin** otwiera `http://<ip>:3000` — pełny interfejs z kamery, lidaru, GPIO, configu.
+
+## Podgląd / symulator (bez Pi)
 
 ```bash
-cd mobile
-npx eas-cli login
-npx eas build -p android --profile preview
+pip install -r rpi/requirements.txt
+python rpi/rpilot_agent.py --host 0.0.0.0 --port 8742
 ```
 
-Po instalacji aplikacja przy włączeniu:
+Symulator mówi protokołem Gremlina (WS `:8765` + `/ws` na HTTP, discovery UDP, ` /api/robot-config`).
 
-1. odpytuje ostatnio zapisany adres,
-2. wysyła broadcast `RPILOT_DISCOVER`,
-3. łączy się z pierwszą odpowiedzią i otwiera drążek.
+## Protokół (jak w Gremlinie)
 
-W przeglądarce nie ma UDP — wtedy używany jest HTTP/WebSocket (ten sam panel co na Pi).
-
-Opcjonalnie: `EXPO_PUBLIC_ROBOT_HOST=192.168.1.42:8742`.
-
-## Endpointy agenta
-
-| Metoda | Ścieżka | Opis |
+| Kanał | Adres | Rola |
 | --- | --- | --- |
-| GET | `/api/info` | id, nazwa, porty |
-| GET | `/api/status` | poza, PWM, bateria |
-| GET | `/api/health` | liveness |
-| GET | `/api/endpoints` | lista API |
-| GET | `/api/motors` | lewy/prawy |
-| POST | `/api/drive` | `{ "x", "y" }` −1…1 |
-| POST | `/api/stop` | stop |
-| POST | `/api/command/{name}` | `beep`, `lights`, `dock`, `center`, `estop` |
-| WS | `/ws/control` | ten sam JSON co UDP |
-| UDP | `:45454` | discovery |
-| UDP | `:45455` | drive / stop / cmd |
+| UDP discover | `:45454` | `GREMLIN_DISCOVER` → `GREMLIN_HERE` + IP |
+| WebSocket | `:8765` | `motor`, `gpio`, `play_sound`, `get_ads1115_values`, `get_encoder_ticks`, `register_video_sink`, `set_program_status`, … |
+| HTTP panel | `:3000` | `/api/robot-config`, `/api/config`, `/api/sounds`, UI |
+| UDP kamera | `:9000` | klatki JPEG (site przekazuje do przeglądarki) |
 
-## Testy agenta
+PWM: 0–4095, 8 kanałów. Cisza 350 ms = stop (w aplikacji i w symulatorze).
+
+## Testy
 
 ```bash
-pip install -r rpi/requirements.txt pytest
 cd rpi && python -m pytest test_agent.py
 ```

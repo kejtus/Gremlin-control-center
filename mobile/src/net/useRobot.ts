@@ -1,19 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, Platform } from 'react-native';
+import { computeChannelValuesFromVector, motorPackets, powerToPwm } from '../mecanum';
 import {
   PROTOCOL,
   clampStick,
+  wsUrl,
   type EndpointInfo,
+  type MotorPairs,
   type RobotInfo,
   type RobotStatus,
 } from '../protocol';
+import { DEFAULT_MOTOR_PAIRS } from '../mecanum';
 import { loadLastRobot, saveLastRobot } from '../storage';
 import {
   fetchEndpoints,
+  fetchMotorPairs,
   fetchStatus,
-  postCommand,
-  postDrive,
-  postStop,
   probeRobot,
   sameOriginInfo,
 } from './http';
@@ -25,32 +27,37 @@ export type Phase = 'booting' | 'searching' | 'connecting' | 'online' | 'offline
 function envHost(): RobotInfo | null {
   const raw = process.env.EXPO_PUBLIC_ROBOT_HOST;
   if (!raw) return null;
+  const host = raw.replace(/\/$/, '');
   try {
     if (raw.startsWith('http://') || raw.startsWith('https://')) {
       const url = new URL(raw);
       return {
         id: 'env',
-        name: 'Robot',
-        host: raw.replace(/\/$/, ''),
-        httpPort: url.port ? Number(url.port) : url.protocol === 'https:' ? 443 : 80,
-        udpPort: PROTOCOL.controlPort,
+        name: 'Gremlin',
+        host,
+        httpPort: url.port ? Number(url.port) : 80,
+        wsPort: PROTOCOL.wsPort,
+        sitePort: PROTOCOL.sitePort,
+        udpPort: PROTOCOL.discoverPort,
         proto: PROTOCOL.proto,
         via: 'http',
       };
     }
-    const [host, port] = raw.split(':');
-    return {
-      id: 'env',
-      name: 'Robot',
-      host,
-      httpPort: port ? Number(port) : PROTOCOL.httpPort,
-      udpPort: PROTOCOL.controlPort,
-      proto: PROTOCOL.proto,
-      via: 'http',
-    };
   } catch {
     return null;
   }
+  const [h, p] = raw.split(':');
+  return {
+    id: 'env',
+    name: 'Gremlin',
+    host: h,
+    httpPort: p ? Number(p) : PROTOCOL.httpPort,
+    wsPort: PROTOCOL.wsPort,
+    sitePort: PROTOCOL.sitePort,
+    udpPort: PROTOCOL.discoverPort,
+    proto: PROTOCOL.proto,
+    via: 'http',
+  };
 }
 
 function webHttpCandidates(): RobotInfo[] {
@@ -59,22 +66,26 @@ function webHttpCandidates(): RobotInfo[] {
   const items: RobotInfo[] = [sameOriginInfo()];
   if (hostname) {
     items.push({
-      id: 'lan-default',
-      name: 'Robot w sieci',
+      id: 'lan-site',
+      name: 'Gremlin',
       host: hostname,
-      httpPort: PROTOCOL.httpPort,
-      udpPort: PROTOCOL.controlPort,
+      httpPort: PROTOCOL.sitePort,
+      wsPort: PROTOCOL.wsPort,
+      sitePort: PROTOCOL.sitePort,
+      udpPort: PROTOCOL.discoverPort,
       proto: PROTOCOL.proto,
       via: 'http',
     });
     const currentPort = port ? Number(port) : protocol === 'https:' ? 443 : 80;
     if (currentPort !== PROTOCOL.httpPort) {
       items.push({
-        id: 'same-host-agent',
-        name: 'Agent na tym hoście',
-        host: `${protocol}//${hostname}:${PROTOCOL.httpPort}`,
+        id: 'sim-http',
+        name: 'Gremlin',
+        host: hostname,
         httpPort: PROTOCOL.httpPort,
-        udpPort: PROTOCOL.controlPort,
+        wsPort: PROTOCOL.wsPort,
+        sitePort: PROTOCOL.sitePort,
+        udpPort: PROTOCOL.discoverPort,
         proto: PROTOCOL.proto,
         via: 'http',
       });
@@ -85,9 +96,7 @@ function webHttpCandidates(): RobotInfo[] {
 
 async function probeMany(candidates: RobotInfo[]): Promise<RobotInfo | null> {
   const unique = new Map<string, RobotInfo>();
-  for (const c of candidates) {
-    unique.set(`${c.host}:${c.httpPort}`, c);
-  }
+  for (const c of candidates) unique.set(`${c.host}:${c.httpPort}`, c);
   const results = await Promise.all([...unique.values()].map((c) => probeRobot(c)));
   return results.find((r): r is RobotInfo => r != null) ?? null;
 }
@@ -99,16 +108,19 @@ export function useRobot() {
   const [status, setStatus] = useState<RobotStatus | null>(null);
   const [endpoints, setEndpoints] = useState<EndpointInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [transport, setTransport] = useState<'udp' | 'ws' | 'http'>('http');
+  const [transport, setTransport] = useState<'udp' | 'ws' | 'http'>('ws');
+  const [power, setPower] = useState(0.45);
 
-  const seq = useRef(1);
   const wsRef = useRef<WebSocket | null>(null);
   const udpRef = useRef<UdpLink | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const scanRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const activeRef = useRef<RobotInfo | null>(null);
-  const driveRef = useRef({ x: 0, y: 0, moving: false });
+  const driveRef = useRef({ vy: 0, vx: 0, omega: 0, moving: false });
   const driveTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastChannels = useRef('');
+  const pairsRef = useRef<MotorPairs>(DEFAULT_MOTOR_PAIRS);
+  const powerRef = useRef(0.45);
   const busyRef = useRef(false);
 
   const stopScanLoop = () => {
@@ -130,7 +142,7 @@ export function useRobot() {
     try {
       wsRef.current?.close();
     } catch {
-      // ignore
+      /* ignore */
     }
     wsRef.current = null;
     udpRef.current?.close();
@@ -141,51 +153,84 @@ export function useRobot() {
     setStatus(next);
   }, []);
 
-  const openWebSocket = useCallback((info: RobotInfo) => {
-    const base = info.host.startsWith('http') ? info.host : `http://${info.host}:${info.httpPort}`;
-    let url: URL;
-    try {
-      url = new URL(base);
-    } catch {
-      return false;
-    }
-    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-    url.pathname = '/ws/control';
-    url.search = '';
-    try {
-      const ws = new WebSocket(url.toString());
-      wsRef.current = ws;
-      ws.onmessage = (ev) => {
-        try {
-          const parsed = JSON.parse(String(ev.data)) as { t?: string; status?: RobotStatus };
-          if (parsed.status) applyStatus(parsed.status);
-        } catch {
-          // ignore
-        }
-      };
-      ws.onopen = () => setTransport((t) => (t === 'udp' ? t : 'ws'));
-      ws.onerror = () => {
-        /* polling remains as fallback */
-      };
-      ws.onclose = () => {
-        if (wsRef.current === ws) wsRef.current = null;
-      };
-      return true;
-    } catch {
-      return false;
-    }
-  }, [applyStatus]);
-
-  const sendPacket = useCallback((packet: object) => {
-    if (udpRef.current) {
-      udpRef.current.send(packet);
-      return;
-    }
+  const sendJson = useCallback((packet: object) => {
+    udpRef.current?.send(packet);
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(packet));
     }
   }, []);
+
+  const sendMotors = useCallback(
+    (vy: number, vx: number, omega: number) => {
+      const channels = computeChannelValuesFromVector(vy, vx, omega, powerToPwm(powerRef.current), pairsRef.current);
+      const serialized = JSON.stringify(channels);
+      if (serialized === lastChannels.current && !vy && !vx && !omega) return;
+      lastChannels.current = serialized;
+      for (const pkt of motorPackets(channels)) sendJson(pkt);
+    },
+    [sendJson],
+  );
+
+  const openSocket = useCallback(
+    (info: RobotInfo) => {
+      const candidates = [wsUrl(info)];
+      if (info.via === 'same-origin' && typeof window !== 'undefined') {
+        candidates.push(`ws://${window.location.hostname}:${PROTOCOL.wsPort}`);
+      } else if (typeof window !== 'undefined' && info.host) {
+        const host = info.host.replace(/^https?:\/\//, '').split(':')[0];
+        candidates.push(`ws://${window.location.host}/ws`);
+        candidates.push(`ws://${host}:${PROTOCOL.wsPort}`);
+      }
+
+      const tryNext = (i: number) => {
+        if (i >= candidates.length) return;
+        let ws: WebSocket;
+        try {
+          ws = new WebSocket(candidates[i]);
+        } catch {
+          tryNext(i + 1);
+          return;
+        }
+        wsRef.current = ws;
+        ws.onmessage = (ev) => {
+          try {
+            const parsed = JSON.parse(String(ev.data)) as {
+              type?: string;
+              status?: RobotStatus;
+              values?: { a0?: number };
+            };
+            if (parsed.status) applyStatus(parsed.status);
+            if (parsed.type === 'ads1115_values' && parsed.values?.a0 != null) {
+              const v = parsed.values.a0;
+              const pct = Math.max(0, Math.min(100, ((v - 10) / 6) * 100));
+              setStatus((prev) => (prev ? { ...prev, batteryPct: pct } : prev));
+            }
+            if (parsed.type === 'program_status') {
+              setStatus((prev) =>
+                prev ? { ...prev, programOn: (parsed as { status?: string }).status === 'on' } : prev,
+              );
+            }
+          } catch {
+            /* ignore */
+          }
+        };
+        ws.onopen = () => {
+          setTransport('ws');
+          sendJson({ type: 'get_program_status' });
+          sendJson({ type: 'get_ads1115_values' });
+        };
+        ws.onerror = () => {
+          if (wsRef.current === ws) tryNext(i + 1);
+        };
+        ws.onclose = () => {
+          if (wsRef.current === ws) wsRef.current = null;
+        };
+      };
+      tryNext(0);
+    },
+    [applyStatus, sendJson],
+  );
 
   const connect = useCallback(
     async (info: RobotInfo) => {
@@ -195,45 +240,64 @@ export function useRobot() {
       setError(null);
       teardownLink();
       try {
-      const probed = await probeRobot(info);
-      if (!probed) {
-        setPhase('offline');
-        setError('Robot nie odpowiada na HTTP. Sprawdź sieć Wi‑Fi i adres.');
-        return false;
-      }
-      activeRef.current = probed;
-      setActive(probed);
-      await saveLastRobot(probed);
+        const probed = (await probeRobot(info)) ?? info;
+        activeRef.current = probed;
+        setActive(probed);
+        await saveLastRobot(probed);
 
-      const udp = probed.via !== 'same-origin' && udpAvailable() ? openUdpControl(probed, applyStatus) : null;
-      udpRef.current = udp;
-      setTransport(udp ? 'udp' : 'http');
-      openWebSocket(probed);
+        const pairs = await fetchMotorPairs(probed);
+        if (pairs) pairsRef.current = pairs;
 
-      try {
-        const [st, eps] = await Promise.all([fetchStatus(probed), fetchEndpoints(probed)]);
-        setStatus(st);
-        setEndpoints(eps);
+        const udp = probed.via !== 'same-origin' && udpAvailable() ? openUdpControl(probed, applyStatus) : null;
+        udpRef.current = udp;
+        setTransport(udp ? 'udp' : 'ws');
+        openSocket(probed);
+
+        try {
+          const [st, eps] = await Promise.all([fetchStatus(probed), fetchEndpoints(probed)]);
+          setStatus(st);
+          setEndpoints(eps);
+        } catch {
+          setStatus({
+            id: probed.id,
+            name: probed.name,
+            connected: true,
+            uptimeSec: 0,
+            batteryPct: 0,
+            motors: { left: 0, right: 0 },
+            pose: { x: 5, y: 5, heading: 0 },
+            lights: false,
+            estop: false,
+            lastCommandAgeMs: null,
+            clients: 1,
+            mode: 'gremlin',
+            arena: { width: 10, height: 10 },
+          });
+          setEndpoints([
+            { method: 'WS', path: `ws://${probed.host}:${probed.wsPort || 8765}`, summary: 'Sterowanie Gremlin' },
+            { method: 'HTTP', path: `http://${probed.host}:${probed.sitePort || 3000}`, summary: 'Panel na Raspberry Pi' },
+          ]);
+        }
+
+        pollRef.current = setInterval(() => {
+          const current = activeRef.current;
+          if (!current) return;
+          fetchStatus(current).then(applyStatus).catch(() => undefined);
+          sendJson({ type: 'get_ads1115_values' });
+        }, 500);
+
+        setPhase('online');
+        setRobots((prev) => [probed, ...prev.filter((r) => r.id !== probed.id)]);
+        return true;
       } catch {
-        setEndpoints([]);
+        setPhase('offline');
+        setError('Nie udało się połączyć z Gremlinem (WS :8765 / panel HTTP).');
+        return false;
+      } finally {
+        busyRef.current = false;
       }
-
-      pollRef.current = setInterval(() => {
-        const current = activeRef.current;
-        if (!current) return;
-        fetchStatus(current).then(applyStatus).catch(() => {
-          setPhase((p) => (p === 'online' ? 'offline' : p));
-        });
-      }, 400);
-
-      setPhase('online');
-      setRobots((prev) => {
-        const rest = prev.filter((r) => r.id !== probed.id);
-        return [probed, ...rest];
-      });
-      return true;
     },
-    [applyStatus, openWebSocket, teardownLink],
+    [applyStatus, openSocket, sendJson, teardownLink],
   );
 
   const scanOnce = useCallback(async () => {
@@ -244,14 +308,12 @@ export function useRobot() {
       ...(last ? [{ ...last, via: last.via || 'http' }] : []),
       ...webHttpCandidates(),
     ]);
-
     let udpFound: RobotInfo[] = [];
     try {
       udpFound = await discoverRobots(PROTOCOL.discoverTimeoutMs);
     } catch {
       udpFound = [];
     }
-
     const merged = new Map<string, RobotInfo>();
     for (const r of udpFound) merged.set(r.id, r);
     if (httpFound) merged.set(httpFound.id, httpFound);
@@ -275,7 +337,7 @@ export function useRobot() {
       return;
     }
     setPhase('offline');
-    setError('Nie znaleziono robota w sieci. Zostaw aplikację otwartą — szukam dalej.');
+    setError('Nie znaleziono Gremlina w sieci. Szukam dalej broadcastem UDP.');
   }, [connect, scanOnce]);
 
   useEffect(() => {
@@ -295,10 +357,8 @@ export function useRobot() {
     scanRef.current = setInterval(() => {
       void (async () => {
         const { list, httpFound, udpFound } = await scanOnce();
-        if (phase === 'searching' || phase === 'offline' || phase === 'booting') {
-          const next = httpFound || udpFound[0] || list[0];
-          if (next) await connect(next);
-        }
+        const next = httpFound || udpFound[0] || list[0];
+        if (next) await connect(next);
       })();
     }, 2500);
     return stopScanLoop;
@@ -306,9 +366,7 @@ export function useRobot() {
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active' && phase !== 'online') {
-        void autoConnect();
-      }
+      if (state === 'active' && phase !== 'online') void autoConnect();
     });
     return () => sub.remove();
   }, [autoConnect, phase]);
@@ -316,45 +374,50 @@ export function useRobot() {
   const startDriveLoop = useCallback(() => {
     if (driveTimer.current) return;
     driveTimer.current = setInterval(() => {
-      const { x, y, moving } = driveRef.current;
+      const { vy, vx, omega, moving } = driveRef.current;
       if (!moving) return;
-      const packet = { t: 'drive', x, y, seq: seq.current++ };
-      sendPacket(packet);
-      const info = activeRef.current;
-      if (!udpRef.current && !(wsRef.current && wsRef.current.readyState === WebSocket.OPEN) && info) {
-        void postDrive(info, x, y).catch(() => undefined);
-      }
+      sendMotors(vy, vx, omega);
     }, Math.round(1000 / PROTOCOL.driveHz));
-  }, [sendPacket]);
+  }, [sendMotors]);
 
   const drive = useCallback(
-    (x: number, y: number) => {
-      const nx = clampStick(x);
-      const ny = clampStick(y);
-      const moving = Math.hypot(nx, ny) > 0.04;
-      driveRef.current = { x: nx, y: ny, moving };
+    (x: number, y: number, omega = 0) => {
+      const vx = clampStick(x);
+      const vy = clampStick(y);
+      const w = clampStick(omega);
+      const moving = Math.hypot(vx, vy, w) > 0.04;
+      driveRef.current = { vy, vx, omega: w, moving };
       if (moving) startDriveLoop();
-      else {
-        sendPacket({ t: 'stop', seq: seq.current++ });
-        const info = activeRef.current;
-        if (info && !udpRef.current) void postStop(info).catch(() => undefined);
-      }
+      else sendMotors(0, 0, 0);
     },
-    [sendPacket, startDriveLoop],
+    [sendMotors, startDriveLoop],
+  );
+
+  const setOmega = useCallback(
+    (omega: number) => {
+      const { vx, vy } = driveRef.current;
+      drive(vx, vy, omega);
+    },
+    [drive],
   );
 
   const stop = useCallback(() => {
-    driveRef.current = { x: 0, y: 0, moving: false };
-    sendPacket({ t: 'stop', seq: seq.current++ });
-    const info = activeRef.current;
-    if (info) void postStop(info).catch(() => undefined);
-  }, [sendPacket]);
+    driveRef.current = { vy: 0, vx: 0, omega: 0, moving: false };
+    sendMotors(0, 0, 0);
+    sendJson({ type: 'stop' });
+  }, [sendJson, sendMotors]);
 
-  const command = useCallback(async (name: string) => {
-    sendPacket({ t: 'cmd', name, seq: seq.current++ });
-    const info = activeRef.current;
-    if (info) await postCommand(info, name);
-  }, [sendPacket]);
+  const command = useCallback(
+    async (name: string) => {
+      if (name === 'beep' || name === 'signal') sendJson({ type: 'play_sound', file: 'beep.wav', volume: 1 });
+      else if (name === 'lights') sendJson({ type: 'gpio', pin_name: 'GPIO4', value: 1 });
+      else if (name === 'center' || name === 'stop') stop();
+      else if (name === 'follow') sendJson({ type: 'set_follow_band_mode', enabled: true });
+      else if (name === 'manual') sendJson({ type: 'set_follow_band_mode', enabled: false });
+      else sendJson({ type: name });
+    },
+    [sendJson, stop],
+  );
 
   const connectManual = useCallback(
     async (host: string) => {
@@ -362,10 +425,12 @@ export function useRobot() {
       if (!trimmed) return false;
       const info: RobotInfo = {
         id: `manual-${trimmed}`,
-        name: 'Robot',
+        name: 'Gremlin',
         host: trimmed.replace(/\/$/, ''),
         httpPort: PROTOCOL.httpPort,
-        udpPort: PROTOCOL.controlPort,
+        wsPort: PROTOCOL.wsPort,
+        sitePort: PROTOCOL.sitePort,
+        udpPort: PROTOCOL.discoverPort,
         proto: PROTOCOL.proto,
         via: 'manual',
       };
@@ -373,11 +438,11 @@ export function useRobot() {
         try {
           const url = new URL(trimmed);
           info.host = trimmed.replace(/\/$/, '');
-          info.httpPort = url.port ? Number(url.port) : url.protocol === 'https:' ? 443 : 80;
+          info.httpPort = url.port ? Number(url.port) : 80;
         } catch {
-          // keep as typed
+          /* keep */
         }
-      } else if (trimmed.includes(':') && !trimmed.includes('://')) {
+      } else if (trimmed.includes(':')) {
         const [h, p] = trimmed.split(':');
         info.host = h;
         info.httpPort = Number(p) || PROTOCOL.httpPort;
@@ -388,12 +453,20 @@ export function useRobot() {
   );
 
   const disconnect = useCallback(() => {
+    stop();
     teardownLink();
     activeRef.current = null;
     setActive(null);
     setStatus(null);
     setPhase('offline');
-  }, [teardownLink]);
+  }, [stop, teardownLink]);
+
+  const updatePower = useCallback((p: number) => {
+    const v = clampStick(p) < 0 ? 0 : Math.min(1, p);
+    powerRef.current = v;
+    setPower(v);
+    sendJson({ type: 'set_follow_band_speed', pwm: powerToPwm(v) });
+  }, [sendJson]);
 
   return {
     phase,
@@ -403,13 +476,17 @@ export function useRobot() {
     endpoints,
     error,
     transport,
+    power,
+    setPower: updatePower,
     udpAvailable: udpAvailable(),
     drive,
+    setOmega,
     stop,
     command,
     connect,
     connectManual,
     disconnect,
     retry: autoConnect,
+    sendJson,
   };
 }

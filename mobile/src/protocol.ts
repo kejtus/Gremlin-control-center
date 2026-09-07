@@ -1,13 +1,16 @@
 export const PROTOCOL = {
-  magicDiscover: 'RPILOT_DISCOVER',
-  magicHere: 'RPILOT_HERE',
+  magicDiscover: 'GREMLIN_DISCOVER',
+  magicHere: 'GREMLIN_HERE',
   discoverPort: 45454,
   controlPort: 45455,
+  wsPort: 8765,
+  sitePort: 3000,
   httpPort: 8742,
   proto: 1,
   driveHz: 20,
   safetyTimeoutMs: 350,
   discoverTimeoutMs: 1800,
+  maxPwm: 4095,
 } as const;
 
 export type RobotInfo = {
@@ -15,9 +18,11 @@ export type RobotInfo = {
   name: string;
   host: string;
   httpPort: number;
+  wsPort: number;
+  sitePort: number;
   udpPort: number;
   proto: number;
-  via: 'udp' | 'http' | 'same-origin' | 'manual';
+  via: 'udp' | 'http' | 'same-origin' | 'manual' | 'ws';
 };
 
 export type RobotStatus = {
@@ -27,45 +32,26 @@ export type RobotStatus = {
   uptimeSec: number;
   batteryPct: number;
   motors: { left: number; right: number };
+  channels?: Record<number, number>;
   pose: { x: number; y: number; heading: number };
   lights: boolean;
   estop: boolean;
   lastCommandAgeMs: number | null;
   clients: number;
-  mode: 'sim' | 'gpio';
+  mode: 'sim' | 'gpio' | 'gremlin';
+  programOn?: boolean;
+  followBand?: boolean;
+  pwmPeak?: number;
   arena: { width: number; height: number };
 };
-
-export type DriveCommand = {
-  t: 'drive';
-  x: number;
-  y: number;
-  seq: number;
-};
-
-export type StopCommand = {
-  t: 'stop';
-  seq: number;
-};
-
-export type NamedCommand = {
-  t: 'cmd';
-  name: string;
-  seq: number;
-};
-
-export type PingCommand = {
-  t: 'ping';
-  seq: number;
-};
-
-export type ControlPacket = DriveCommand | StopCommand | NamedCommand | PingCommand;
 
 export type EndpointInfo = {
   method: string;
   path: string;
   summary: string;
 };
+
+export type MotorPairs = Record<string, [number, number]>;
 
 export function httpBase(info: Pick<RobotInfo, 'host' | 'httpPort'>): string {
   if (!info.host) return '';
@@ -75,17 +61,18 @@ export function httpBase(info: Pick<RobotInfo, 'host' | 'httpPort'>): string {
   return `http://${info.host}:${info.httpPort}`;
 }
 
-export function wsUrl(info: Pick<RobotInfo, 'host' | 'httpPort'>): string {
-  const base = httpBase(info);
-  if (!base) {
-    const proto = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${proto}//${typeof window !== 'undefined' ? window.location.host : '127.0.0.1'}/ws/control`;
+export function siteUrl(info: RobotInfo): string {
+  const host = info.host.replace(/^https?:\/\//, '').split(':')[0];
+  return `http://${host}:${info.sitePort || PROTOCOL.sitePort}`;
+}
+
+export function wsUrl(info: Pick<RobotInfo, 'host' | 'wsPort' | 'httpPort' | 'via'>): string {
+  if (info.via === 'same-origin' && typeof window !== 'undefined') {
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${window.location.host}/ws`;
   }
-  const url = new URL(base);
-  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-  url.pathname = '/ws/control';
-  url.search = '';
-  return url.toString();
+  const host = info.host.replace(/^https?:\/\//, '').split('/')[0].split(':')[0];
+  return `ws://${host}:${info.wsPort || PROTOCOL.wsPort}`;
 }
 
 export function clampStick(v: number): number {
@@ -98,16 +85,18 @@ export function parseHerePayload(raw: string, fromHost: string): RobotInfo | nul
   const nl = text.indexOf('\n');
   const head = nl === -1 ? text : text.slice(0, nl);
   const body = nl === -1 ? '' : text.slice(nl + 1);
-  if (!head.startsWith(PROTOCOL.magicHere)) return null;
+  if (!head.startsWith(PROTOCOL.magicHere) && !head.startsWith('RPILOT_HERE')) return null;
   try {
-    const json = JSON.parse(body || '{}') as Partial<RobotInfo> & { host?: string };
-    if (!json.id || !json.name) return null;
+    const json = JSON.parse(body || '{}') as Partial<RobotInfo>;
+    if (!json.id && !json.name) return null;
     return {
-      id: json.id,
-      name: json.name,
+      id: json.id || 'gremlin',
+      name: json.name || 'Gremlin',
       host: json.host || fromHost,
       httpPort: json.httpPort || PROTOCOL.httpPort,
-      udpPort: json.udpPort || PROTOCOL.controlPort,
+      wsPort: json.wsPort || PROTOCOL.wsPort,
+      sitePort: json.sitePort || PROTOCOL.sitePort,
+      udpPort: json.udpPort || PROTOCOL.discoverPort,
       proto: json.proto || PROTOCOL.proto,
       via: 'udp',
     };

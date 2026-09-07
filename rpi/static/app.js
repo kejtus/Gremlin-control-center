@@ -1,4 +1,11 @@
-const LAST_KEY = "rpilot.host";
+const LAST_KEY = "gremlin.host";
+const MAX_PWM = 4095;
+const MOTOR_PAIRS = { FL: [0, 1], FR: [3, 2], RL: [4, 5], RR: [7, 6] };
+const DIR = {
+  Przód: { FL: -1, FR: -1, RL: -1, RR: -1 },
+  "Full prawo": { FL: -1, FR: 1, RL: 1, RR: -1 },
+  Prawo: { FL: 1, FR: -1, RL: 1, RR: -1 },
+};
 
 const ui = {
   name: document.getElementById("robot-name"),
@@ -20,9 +27,11 @@ const ui = {
 
 let base = "";
 let ws = null;
-let seq = 1;
-let drive = { x: 0, y: 0, moving: false };
+let pairs = MOTOR_PAIRS;
+let power = 0.45;
+let drive = { vx: 0, vy: 0, omega: 0, moving: false };
 let driveTimer = null;
+let lastSent = "";
 let status = null;
 
 function apiUrl(path) {
@@ -43,15 +52,52 @@ function setLink(ok, text) {
   ui.label.textContent = text;
 }
 
+function channelsFromVector(vy, vx, omega, maxPwm) {
+  const out = {};
+  for (let i = 0; i < 8; i++) out[i] = 0;
+  for (const role of Object.keys(pairs)) {
+    const pair = pairs[role];
+    if (!pair) continue;
+    const [fCh, bCh] = pair;
+    const net =
+      (vy * (DIR.Przód[role] || 0) + vx * (DIR["Full prawo"][role] || 0) + omega * (DIR.Prawo[role] || 0)) * maxPwm;
+    if (net > 0) {
+      out[fCh] = Math.round(Math.min(net, maxPwm));
+      out[bCh] = 0;
+    } else if (net < 0) {
+      out[fCh] = 0;
+      out[bCh] = Math.round(Math.min(-net, maxPwm));
+    }
+  }
+  return out;
+}
+
+function send(packet) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(packet));
+    return true;
+  }
+  return false;
+}
+
+function sendMotors(vy, vx, omega) {
+  const values = channelsFromVector(vy, vx, omega, Math.round(power * MAX_PWM));
+  const serialized = JSON.stringify(values);
+  if (serialized === lastSent) return;
+  lastSent = serialized;
+  for (let ch = 0; ch < 8; ch++) send({ type: "motor", channel: ch, pwm: values[ch] });
+}
+
 function renderStatus(s) {
   status = s;
-  ui.name.textContent = s.name;
+  ui.name.textContent = s.name || "Gremlin";
   ui.battery.textContent = `${Math.round(s.batteryPct)}%`;
-  ui.left.textContent = `${Math.round(s.motors.left * 100)}%`;
-  ui.right.textContent = `${Math.round(s.motors.right * 100)}%`;
+  const ch = s.channels || {};
+  ui.left.textContent = `${Math.round(((ch[0] || 0) / MAX_PWM) * 100)}%`;
+  ui.right.textContent = `${Math.round(((ch[2] || 0) / MAX_PWM) * 100)}%`;
   ui.x.textContent = s.pose.x.toFixed(2);
   ui.y.textContent = s.pose.y.toFixed(2);
-  ui.mode.textContent = `${s.mode === "gpio" ? "Napęd GPIO" : "Symulacja fizyki"}${s.estop ? " · E-STOP" : ""}${s.lights ? " · światła" : ""}`;
+  ui.mode.textContent = `Gremlin · WS motor${s.followBand ? " · taśma" : ""}${s.programOn === false ? " · OFF" : ""}`;
   const w = ui.arena.clientWidth;
   const h = ui.arena.clientHeight;
   const px = (s.pose.x / s.arena.width) * w;
@@ -69,30 +115,17 @@ function renderEndpoints(list) {
     .join("");
 }
 
-function send(packet) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(packet));
-    return true;
-  }
-  return false;
-}
-
 function startDriveLoop() {
   if (driveTimer) return;
   driveTimer = setInterval(() => {
     if (!drive.moving) return;
-    const packet = { t: "drive", x: drive.x, y: drive.y, seq: seq++ };
-    if (!send(packet)) {
-      void getJson("/api/drive", { method: "POST", body: JSON.stringify({ x: drive.x, y: drive.y }) }).catch(() => {});
-    }
+    sendMotors(drive.vy, drive.vx, drive.omega);
   }, 50);
 }
 
 function stopDrive() {
-  drive = { x: 0, y: 0, moving: false };
-  if (!send({ t: "stop", seq: seq++ })) {
-    void getJson("/api/stop", { method: "POST", body: "{}" }).catch(() => {});
-  }
+  drive = { vx: 0, vy: 0, omega: 0, moving: false };
+  sendMotors(0, 0, 0);
 }
 
 function attachJoystick() {
@@ -107,7 +140,7 @@ function attachJoystick() {
     x = Math.max(-max, Math.min(max, x));
     y = Math.max(-max, Math.min(max, y));
     setKnob(x, y);
-    drive = { x: x / max, y: -y / max, moving: Math.hypot(x, y) > 4 };
+    drive = { vx: x / max, vy: -y / max, omega: 0, moving: Math.hypot(x, y) > 4 };
     if (drive.moving) startDriveLoop();
   };
   const end = () => {
@@ -119,41 +152,50 @@ function attachJoystick() {
     apply(ev.clientX, ev.clientY);
   });
   ui.stick.addEventListener("pointermove", (ev) => {
-    if (!ev.buttons && ev.pointerType !== "touch") return;
-    if (!ui.stick.hasPointerCapture(ev.pointerId) && ev.pointerType !== "touch") return;
+    if (!ui.stick.hasPointerCapture(ev.pointerId)) return;
     apply(ev.clientX, ev.clientY);
   });
   ui.stick.addEventListener("pointerup", end);
   ui.stick.addEventListener("pointercancel", end);
 }
 
-function wsUrl() {
-  const root = base || window.location.origin;
-  const url = new URL(root);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  url.pathname = "/ws/control";
-  url.search = "";
-  return url.toString();
+function wsCandidates() {
+  const host = base ? new URL(base.startsWith("http") ? base : `http://${base}`).hostname : window.location.hostname;
+  return [`ws://${window.location.host}/ws`, `ws://${host}:8765`];
 }
 
-function connectWs() {
+function connectWs(index = 0) {
+  const list = wsCandidates();
+  if (index >= list.length) return;
   try {
-    ws = new WebSocket(wsUrl());
-    ws.onmessage = (ev) => {
-      try {
-        const msg = JSON.parse(ev.data);
-        if (msg.status) renderStatus(msg.status);
-      } catch {
-        /* ignore */
-      }
-    };
-    ws.onopen = () => setLink(true, `${new URL(base || window.location.origin).host} · WS`);
-    ws.onclose = () => {
-      if (status) setLink(false, "utracono WebSocket — HTTP nadal działa");
-    };
+    ws = new WebSocket(list[index]);
   } catch {
-    ws = null;
+    connectWs(index + 1);
+    return;
   }
+  ws.onmessage = (ev) => {
+    try {
+      const msg = JSON.parse(ev.data);
+      if (msg.status) renderStatus(msg.status);
+      if (msg.type === "ads1115_values" && msg.values && msg.values.a0 != null) {
+        const pct = Math.max(0, Math.min(100, ((msg.values.a0 - 10) / 6) * 100));
+        ui.battery.textContent = `${Math.round(pct)}%`;
+      }
+    } catch {
+      /* ignore */
+    }
+  };
+  ws.onopen = () => {
+    setLink(true, `${list[index].replace("ws://", "")}`);
+    send({ type: "get_program_status" });
+    send({ type: "get_ads1115_values" });
+  };
+  ws.onerror = () => {
+    if (ws && ws.readyState !== WebSocket.OPEN) connectWs(index + 1);
+  };
+  ws.onclose = () => {
+    if (status) setLink(false, "utracono WS — HTTP nadal działa");
+  };
 }
 
 async function connect(host) {
@@ -163,12 +205,18 @@ async function connect(host) {
     base = "";
   }
   const info = await getJson("/api/info");
-  ui.name.textContent = info.name;
+  ui.name.textContent = info.name || "Gremlin";
   localStorage.setItem(LAST_KEY, base || window.location.origin);
+  try {
+    const cfg = await getJson("/api/robot-config");
+    if (cfg.motors) pairs = cfg.motors;
+  } catch {
+    /* keep defaults */
+  }
   const [st, eps] = await Promise.all([getJson("/api/status"), getJson("/api/endpoints")]);
   renderStatus(st);
   renderEndpoints(eps.endpoints || []);
-  setLink(true, `${info.ip || "lokalnie"} · HTTP`);
+  setLink(true, `${info.ip || "lokalnie"} · Gremlin`);
   connectWs();
 }
 
@@ -181,22 +229,21 @@ async function autoConnect() {
       await connect(host);
       return;
     } catch {
-      /* next candidate */
+      /* next */
     }
   }
-  setLink(false, "brak agenta — podaj adres ręcznie");
+  setLink(false, "brak Gremlina — podaj adres panelu");
   ui.name.textContent = "Brak połączenia";
 }
 
-document.getElementById("estop").addEventListener("click", () => {
-  stopDrive();
-});
+document.getElementById("estop").addEventListener("click", () => stopDrive());
 document.querySelectorAll("[data-cmd]").forEach((btn) => {
   btn.addEventListener("click", () => {
     const name = btn.getAttribute("data-cmd");
-    if (!send({ t: "cmd", name, seq: seq++ })) {
-      void getJson(`/api/command/${name}`, { method: "POST", body: "{}" }).catch(() => {});
-    }
+    if (name === "beep") send({ type: "play_sound", file: "beep.wav", volume: 1 });
+    else if (name === "follow") send({ type: "set_follow_band_mode", enabled: true });
+    else if (name === "manual") send({ type: "set_follow_band_mode", enabled: false });
+    else if (name === "center") stopDrive();
   });
 });
 document.getElementById("manual").addEventListener("submit", (ev) => {

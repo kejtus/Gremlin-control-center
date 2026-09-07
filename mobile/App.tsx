@@ -2,6 +2,7 @@ import { StatusBar } from 'expo-status-bar';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { useEffect } from 'react';
 import {
+  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -14,14 +15,10 @@ import { ConnectPanel } from './src/components/ConnectPanel';
 import { Joystick } from './src/components/Joystick';
 import { TopBar } from './src/components/TopBar';
 import { useRobot } from './src/net/useRobot';
+import { siteUrl } from './src/protocol';
 import { colors, radii } from './src/theme';
 
-const COMMANDS = [
-  { id: 'beep', label: 'Sygnał' },
-  { id: 'lights', label: 'Światła' },
-  { id: 'dock', label: 'Dokuj' },
-  { id: 'center', label: 'Na środek' },
-];
+const POWERS = [0.25, 0.45, 0.7, 1];
 
 export default function App() {
   const robot = useRobot();
@@ -59,22 +56,63 @@ export default function App() {
         ) : (
           <View style={[styles.workspace, wide && styles.workspaceWide]}>
             <View style={styles.driveCol}>
-              <Text style={styles.section}>Sterowanie UDP</Text>
+              <Text style={styles.section}>Mecanum · WS :8765</Text>
               <Text style={styles.hint}>
-                Lewo/prawo skręca, góra/dół jedzie. Puszczenie drążka albo 350 ms ciszy zatrzymuje robot.
+                Góra/dół — jazda, lewo/prawo — ślizg. Przyciski obracają w miejscu.
+                Pakiety type/motor/channel/pwm jak w panelu Gremlina.
               </Text>
               <View style={styles.joyWrap}>
-                <Joystick onChange={robot.drive} disabled={!online} />
+                <Joystick onChange={(x, y) => robot.drive(x, y, 0)} disabled={!online} />
+              </View>
+              <View style={styles.yawRow}>
+                <Pressable
+                  onPressIn={() => robot.setOmega(-1)}
+                  onPressOut={() => robot.setOmega(0)}
+                  style={styles.yaw}
+                >
+                  <Text style={styles.cmdText}>Obrót L</Text>
+                </Pressable>
+                <Pressable
+                  onPressIn={() => robot.setOmega(1)}
+                  onPressOut={() => robot.setOmega(0)}
+                  style={styles.yaw}
+                >
+                  <Text style={styles.cmdText}>Obrót P</Text>
+                </Pressable>
+              </View>
+              <Text style={styles.powerLabel}>Moc {Math.round(robot.power * 100)}%</Text>
+              <View style={styles.cmds}>
+                {POWERS.map((p) => (
+                  <Pressable
+                    key={p}
+                    onPress={() => robot.setPower(p)}
+                    style={[styles.cmd, robot.power === p && styles.cmdOn]}
+                  >
+                    <Text style={styles.cmdText}>{Math.round(p * 100)}%</Text>
+                  </Pressable>
+                ))}
               </View>
               <Pressable onPress={robot.stop} style={styles.estop}>
                 <Text style={styles.estopText}>STOP</Text>
               </Pressable>
               <View style={styles.cmds}>
-                {COMMANDS.map((c) => (
-                  <Pressable key={c.id} onPress={() => void robot.command(c.id)} style={styles.cmd}>
-                    <Text style={styles.cmdText}>{c.label}</Text>
+                <Pressable onPress={() => void robot.command('beep')} style={styles.cmd}>
+                  <Text style={styles.cmdText}>Sygnał</Text>
+                </Pressable>
+                <Pressable onPress={() => void robot.command('follow')} style={styles.cmd}>
+                  <Text style={styles.cmdText}>Śledź taśmę</Text>
+                </Pressable>
+                <Pressable onPress={() => void robot.command('manual')} style={styles.cmd}>
+                  <Text style={styles.cmdText}>Ręczny</Text>
+                </Pressable>
+                {robot.active ? (
+                  <Pressable
+                    onPress={() => void Linking.openURL(siteUrl(robot.active!))}
+                    style={styles.cmd}
+                  >
+                    <Text style={styles.cmdText}>Panel Gremlin</Text>
                   </Pressable>
-                ))}
+                ) : null}
               </View>
             </View>
 
@@ -82,27 +120,14 @@ export default function App() {
               <Text style={styles.section}>Arena i telemetria</Text>
               <Arena status={robot.status} compact={!wide} />
               <View style={styles.metrics}>
-                <Metric
-                  label="lewy"
-                  value={fmt(robot.status?.motors.left)}
-                />
-                <Metric
-                  label="prawy"
-                  value={fmt(robot.status?.motors.right)}
-                />
-                <Metric
-                  label="x"
-                  value={robot.status ? robot.status.pose.x.toFixed(2) : '—'}
-                />
-                <Metric
-                  label="y"
-                  value={robot.status ? robot.status.pose.y.toFixed(2) : '—'}
-                />
+                <Metric label="FL" value={ch(robot.status, 0)} />
+                <Metric label="FR" value={ch(robot.status, 2)} />
+                <Metric label="RL" value={ch(robot.status, 4)} />
+                <Metric label="RR" value={ch(robot.status, 6)} />
               </View>
               <Text style={styles.mode}>
-                {robot.status?.mode === 'gpio' ? 'Napęd GPIO' : 'Symulacja fizyki'}
-                {robot.status?.estop ? ' · E-STOP' : ''}
-                {robot.status?.lights ? ' · światła' : ''}
+                Gremlin · {robot.status?.programOn === false ? 'program OFF' : 'program ON'}
+                {robot.status?.followBand ? ' · taśma' : ''}
               </Text>
               <Text style={styles.section}>Endpointy robota</Text>
               {robot.endpoints.length === 0 ? (
@@ -135,10 +160,10 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function fmt(n?: number): string {
-  if (n == null) return '—';
-  const v = Math.round(n * 100);
-  return `${v}%`;
+function ch(status: { channels?: Record<number, number> } | null, index: number): string {
+  const v = status?.channels?.[index];
+  if (v == null) return '—';
+  return `${Math.round((v / 4095) * 100)}%`;
 }
 
 const styles = StyleSheet.create({
@@ -186,6 +211,25 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginVertical: 8,
   },
+  yawRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 8,
+  },
+  yaw: {
+    flex: 1,
+    backgroundColor: colors.card,
+    borderColor: colors.line,
+    borderWidth: 1,
+    borderRadius: radii.md,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  powerLabel: {
+    color: colors.muted,
+    fontSize: 12,
+    marginBottom: 4,
+  },
   estop: {
     backgroundColor: colors.danger,
     borderRadius: radii.md,
@@ -216,6 +260,10 @@ const styles = StyleSheet.create({
   cmdText: {
     color: colors.text,
     fontWeight: '600',
+  },
+  cmdOn: {
+    borderColor: colors.accent,
+    backgroundColor: colors.accentSoft,
   },
   metrics: {
     flexDirection: 'row',

@@ -1,62 +1,59 @@
 import json
-import math
 
-from rpilot_agent import CONTROL_PORT, DISCOVER_MAGIC, HERE_MAGIC, HTTP_PORT, Robot
-
-
-def test_arcade_mix_and_stop():
-    robot = Robot()
-    robot.apply_drive(0.5, 1.0)
-    assert robot.state.left == 1.0
-    assert 0.4 <= robot.state.right <= 0.6
-    robot.stop()
-    assert robot.state.left == 0
-    assert robot.state.right == 0
+from mecanum import compute_channel_values, compute_channel_values_from_vector
+from rpilot_agent import GremlinSim, HERE_MAGIC, DISCOVER_MAGIC, WS_PORT
 
 
-def test_safety_timeout_stops_motors():
-    robot = Robot()
-    robot.apply_drive(0, 1)
-    robot.state.last_cmd -= 1.0
+def test_forward_matches_js_runtime():
+    values = compute_channel_values({"Przód"}, 100)
+    assert values[1] == 100
+    assert values[0] == 0
+    assert values[3] == 100
+    assert values[2] == 0
+
+
+def test_vector_forward_equals_przod():
+    vec = compute_channel_values_from_vector(1, 0, 0, 100)
+    buttons = compute_channel_values({"Przód"}, 100)
+    assert vec == buttons
+
+
+def test_vector_strafe_right():
+    vec = compute_channel_values_from_vector(0, 1, 0, 100)
+    buttons = compute_channel_values({"Full prawo"}, 100)
+    assert vec == buttons
+
+
+def test_gremlin_motor_command():
+    robot = GremlinSim()
+    robot.handle({"type": "motor", "channel": 3, "pwm": 1500})
+    assert robot.channels[3] == 1500
+
+
+def test_gremlin_program_status():
+    robot = GremlinSim()
+    out = robot.handle({"type": "get_program_status"})
+    assert out["type"] == "program_status"
+    assert out["status"] == "on"
+
+
+def test_gremlin_ads1115():
+    robot = GremlinSim()
+    out = robot.handle({"type": "get_ads1115_values"})
+    assert out["type"] == "ads1115_values"
+    assert out["values"]["a0"] > 10
+
+
+def test_safety_timeout_clears_pwm():
+    robot = GremlinSim()
+    robot.handle({"type": "motor", "channel": 0, "pwm": 2000})
+    robot.last_cmd -= 1.0
     robot.step(0.05)
-    assert robot.state.left == 0
-    assert robot.state.right == 0
+    assert robot.channels[0] == 0
 
 
-def test_physics_moves_forward():
-    robot = Robot()
-    start_x = robot.state.x
-    robot.state.heading = 0.0
-    robot.apply_drive(0, 1)
-    for _ in range(20):
-        robot.step(0.05)
-    assert robot.state.x > start_x
-
-
-def test_unknown_command():
-    robot = Robot()
-    out = robot.command("teleport")
-    assert out["ok"] is False
-
-
-def test_dock_and_center():
-    robot = Robot()
-    robot.command("dock")
-    assert math.isclose(robot.state.y, 0.8)
-    robot.command("center")
-    assert math.isclose(robot.state.x, 5.0)
-
-
-def test_udp_payload_roundtrip():
-    payload = {
-        "id": "rpilot-test",
-        "name": "Robot",
-        "httpPort": HTTP_PORT,
-        "udpPort": CONTROL_PORT,
-        "proto": 1,
-    }
+def test_discovery_magic():
+    payload = {"id": "gremlin", "name": "Gremlin", "wsPort": WS_PORT}
     raw = f"{HERE_MAGIC}\n{json.dumps(payload)}"
-    assert raw.startswith(HERE_MAGIC)
-    assert DISCOVER_MAGIC.startswith("RPILOT")
-    body = json.loads(raw.split("\n", 1)[1])
-    assert body["udpPort"] == CONTROL_PORT
+    assert raw.startswith("GREMLIN_HERE")
+    assert DISCOVER_MAGIC == "GREMLIN_DISCOVER"

@@ -40,8 +40,8 @@ export function ConnectPanel({
       </Text>
       <Text style={styles.body}>
         {udpAvailable
-          ? 'Aplikacja wysyła broadcast UDP. Raspberry Pi odpowiada swoim adresem, po czym łączymy się automatycznie.'
-          : 'W przeglądarce nie ma broadcastu UDP — próbuję tego samego hosta i zapisanego adresu. Na telefonie (APK / Expo) discovery działa przez UDP.'}
+          ? 'Broadcast GREMLIN_DISCOVER. Pi odpowiada adresem, aplikacja otwiera ws://IP:8765 — ten sam kanał co panel Gremlina.'
+          : 'Przeglądarka nie wysyła UDP. Próbuję panelu HTTP i ws://host:8765. Na APK discovery idzie broadcastem.'}
       </Text>
 
       <View style={styles.statusRow}>

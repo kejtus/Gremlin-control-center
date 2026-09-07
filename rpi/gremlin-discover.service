@@ -1,0 +1,17 @@
+[Unit]
+Description=Gremlin UDP discovery sidecar (run next to src.main)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/rpilot/rpi
+ExecStart=/usr/bin/python3 /opt/rpilot/rpi/gremlin_discover.py
+Restart=on-failure
+RestartSec=2
+Environment=GREMLIN_NAME=Gremlin
+Environment=GREMLIN_WS_PORT=8765
+Environment=GREMLIN_SITE_PORT=3000
+
+[Install]
+WantedBy=multi-user.target

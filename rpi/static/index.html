@@ -27,10 +27,10 @@
 
       <main class="layout">
         <section class="panel drive">
-          <h2>Sterowanie</h2>
+          <h2>Sterowanie Gremlin</h2>
           <p class="lede">
-            Drążek wysyła pakiety na agenta (WebSocket, ten sam protokół co UDP z telefonu).
-            Puszczenie albo 350&nbsp;ms ciszy zatrzymuje napęd.
+            Drążek wysyła <code>{type:"motor", channel, pwm}</code> na <code>ws://IP:8765</code>
+            — ten sam protokół co panel na Raspberry Pi. Puszczenie albo 350&nbsp;ms ciszy zatrzymuje napęd.
           </p>
           <div class="stick-wrap">
             <div id="stick" class="stick" aria-label="Drążek sterowania">
@@ -43,9 +43,9 @@
           <button id="estop" type="button" class="estop">STOP</button>
           <div class="cmds">
             <button type="button" data-cmd="beep">Sygnał</button>
-            <button type="button" data-cmd="lights">Światła</button>
-            <button type="button" data-cmd="dock">Dokuj</button>
-            <button type="button" data-cmd="center">Na środek</button>
+            <button type="button" data-cmd="follow">Śledź taśmę</button>
+            <button type="button" data-cmd="manual">Ręczny</button>
+            <button type="button" data-cmd="center">Stop kół</button>
           </div>
         </section>
 
