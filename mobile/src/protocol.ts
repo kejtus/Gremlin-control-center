@@ -33,6 +33,7 @@ export type RobotStatus = {
   batteryPct: number;
   motors: { left: number; right: number };
   channels?: Record<number, number>;
+  wheels?: { FL?: number; FR?: number; RL?: number; RR?: number };
   pose: { x: number; y: number; heading: number };
   lights: boolean;
   estop: boolean;

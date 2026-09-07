@@ -131,6 +131,10 @@ class GremlinSim:
                 "right": round((self.channels.get(2, 0) - self.channels.get(3, 0)) / MAX_PWM, 3),
             },
             "channels": dict(self.channels),
+            "wheels": {
+                role: max(self.channels.get(pair[0], 0), self.channels.get(pair[1], 0))
+                for role, pair in MOTOR_PAIRS.items()
+            },
             "pose": {
                 "x": round(self.x, 3),
                 "y": round(self.y, 3),

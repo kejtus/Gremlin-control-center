@@ -120,10 +120,10 @@ export default function App() {
               <Text style={styles.section}>Arena i telemetria</Text>
               <Arena status={robot.status} compact={!wide} />
               <View style={styles.metrics}>
-                <Metric label="FL" value={ch(robot.status, 0)} />
-                <Metric label="FR" value={ch(robot.status, 2)} />
-                <Metric label="RL" value={ch(robot.status, 4)} />
-                <Metric label="RR" value={ch(robot.status, 6)} />
+                <Metric label="FL" value={wheel(robot.status, 'FL')} />
+                <Metric label="FR" value={wheel(robot.status, 'FR')} />
+                <Metric label="RL" value={wheel(robot.status, 'RL')} />
+                <Metric label="RR" value={wheel(robot.status, 'RR')} />
               </View>
               <Text style={styles.mode}>
                 Gremlin · {robot.status?.programOn === false ? 'program OFF' : 'program ON'}
@@ -160,10 +160,14 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ch(status: { channels?: Record<number, number> } | null, index: number): string {
-  const v = status?.channels?.[index];
-  if (v == null) return '—';
-  return `${Math.round((v / 4095) * 100)}%`;
+function wheel(status: { wheels?: Record<string, number>; channels?: Record<number, number> } | null, role: string): string {
+  const mapped: Record<string, [number, number]> = { FL: [0, 1], FR: [3, 2], RL: [4, 5], RR: [7, 6] };
+  const fromWheels = status?.wheels?.[role];
+  if (fromWheels != null) return `${Math.round((fromWheels / 4095) * 100)}%`;
+  const pair = mapped[role];
+  if (!pair || !status?.channels) return '—';
+  const peak = Math.max(status.channels[pair[0]] ?? 0, status.channels[pair[1]] ?? 0);
+  return `${Math.round((peak / 4095) * 100)}%`;
 }
 
 const styles = StyleSheet.create({

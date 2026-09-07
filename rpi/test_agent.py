@@ -28,6 +28,7 @@ def test_gremlin_motor_command():
     robot = GremlinSim()
     robot.handle({"type": "motor", "channel": 3, "pwm": 1500})
     assert robot.channels[3] == 1500
+    assert robot.snapshot()["wheels"]["FR"] == 1500
 
 
 def test_gremlin_program_status():

@@ -92,11 +92,16 @@ function renderStatus(s) {
   status = s;
   ui.name.textContent = s.name || "Gremlin";
   ui.battery.textContent = `${Math.round(s.batteryPct)}%`;
+  const wheels = s.wheels || {};
   const ch = s.channels || {};
-  ui.left.textContent = `${Math.round(((ch[0] || 0) / MAX_PWM) * 100)}%`;
-  ui.right.textContent = `${Math.round(((ch[2] || 0) / MAX_PWM) * 100)}%`;
-  ui.x.textContent = s.pose.x.toFixed(2);
-  ui.y.textContent = s.pose.y.toFixed(2);
+  const peak = (role, a, b) => {
+    if (wheels[role] != null) return wheels[role];
+    return Math.max(ch[a] || 0, ch[b] || 0);
+  };
+  ui.left.textContent = `${Math.round((peak("FL", 0, 1) / MAX_PWM) * 100)}%`;
+  ui.right.textContent = `${Math.round((peak("FR", 3, 2) / MAX_PWM) * 100)}%`;
+  ui.x.textContent = `${Math.round((peak("RL", 4, 5) / MAX_PWM) * 100)}%`;
+  ui.y.textContent = `${Math.round((peak("RR", 7, 6) / MAX_PWM) * 100)}%`;
   ui.mode.textContent = `Gremlin · WS motor${s.followBand ? " · taśma" : ""}${s.programOn === false ? " · OFF" : ""}`;
   const w = ui.arena.clientWidth;
   const h = ui.arena.clientHeight;
