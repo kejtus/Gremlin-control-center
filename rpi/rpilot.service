@@ -1,0 +1,15 @@
+[Unit]
+Description=RPilot robot agent (discovery, UDP control, HTTP UI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/rpilot/rpi
+ExecStart=/usr/bin/python3 /opt/rpilot/rpi/rpilot_agent.py --host 0.0.0.0 --port 8742
+Restart=on-failure
+RestartSec=2
+Environment=RPILOT_NAME=Robot laboratoryjny
+
+[Install]
+WantedBy=multi-user.target

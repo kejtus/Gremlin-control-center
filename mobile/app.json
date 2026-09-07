@@ -1,0 +1,48 @@
+{
+  "expo": {
+    "name": "RPilot",
+    "slug": "rpilot",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "scheme": "rpilot",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "dev.rpilot.app",
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "RPilot szuka robota Raspberry Pi w Twojej sieci Wi‑Fi i łączy się z nim przez UDP.",
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true
+        }
+      }
+    },
+    "android": {
+      "package": "dev.rpilot.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#07090d",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "INTERNET",
+        "ACCESS_NETWORK_STATE",
+        "ACCESS_WIFI_STATE",
+        "CHANGE_WIFI_MULTICAST_STATE",
+        "CHANGE_WIFI_STATE"
+      ],
+      "usesCleartextTraffic": true
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro",
+      "output": "single",
+      "name": "RPilot"
+    },
+    "plugins": [
+      "expo-network"
+    ]
+  }
+}

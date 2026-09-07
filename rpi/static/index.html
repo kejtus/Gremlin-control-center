@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="pl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#07090d" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="RPilot" />
+    <title>RPilot — sterowanie robotem</title>
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="top">
+        <div>
+          <p class="kicker">RPILOT</p>
+          <h1 id="robot-name">Szukanie robota…</h1>
+          <p class="meta"><span id="link-dot" class="dot warn"></span><span id="link-label">łączenie</span></p>
+        </div>
+        <div class="batt">
+          <strong id="battery">—</strong>
+          <span>akumulator</span>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="panel drive">
+          <h2>Sterowanie</h2>
+          <p class="lede">
+            Drążek wysyła pakiety na agenta (WebSocket, ten sam protokół co UDP z telefonu).
+            Puszczenie albo 350&nbsp;ms ciszy zatrzymuje napęd.
+          </p>
+          <div class="stick-wrap">
+            <div id="stick" class="stick" aria-label="Drążek sterowania">
+              <div class="cross-v"></div>
+              <div class="cross-h"></div>
+              <div class="ring"></div>
+              <div id="knob" class="knob"></div>
+            </div>
+          </div>
+          <button id="estop" type="button" class="estop">STOP</button>
+          <div class="cmds">
+            <button type="button" data-cmd="beep">Sygnał</button>
+            <button type="button" data-cmd="lights">Światła</button>
+            <button type="button" data-cmd="dock">Dokuj</button>
+            <button type="button" data-cmd="center">Na środek</button>
+          </div>
+        </section>
+
+        <section class="panel telem">
+          <h2>Arena i telemetria</h2>
+          <div id="arena" class="arena">
+            <div id="bot" class="bot"><span class="nose"></span></div>
+          </div>
+          <div class="metrics">
+            <div><strong id="m-left">—</strong><span>lewy</span></div>
+            <div><strong id="m-right">—</strong><span>prawy</span></div>
+            <div><strong id="m-x">—</strong><span>x</span></div>
+            <div><strong id="m-y">—</strong><span>y</span></div>
+          </div>
+          <p id="mode" class="mode"></p>
+          <h2>Gotowe endpointy</h2>
+          <div id="endpoints" class="endpoints"></div>
+          <form id="manual" class="manual">
+            <label for="host">Adres agenta (jeśli panel nie jest na Pi)</label>
+            <div class="row">
+              <input id="host" type="text" placeholder="192.168.1.42:8742" autocomplete="off" />
+              <button type="submit">Połącz</button>
+            </div>
+          </form>
+        </section>
+      </main>
+    </div>
+    <script src="/app.js"></script>
+  </body>
+</html>

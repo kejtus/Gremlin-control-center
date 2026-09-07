@@ -1,0 +1,13 @@
+node_modules/
+.expo/
+dist/
+web-build/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+*.tsbuildinfo
+expo-env.d.ts
+agent-tools/
+.metro-health-check*
