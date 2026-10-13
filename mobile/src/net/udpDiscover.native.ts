@@ -1,8 +1,10 @@
 import { Buffer } from 'buffer';
 import { parseHerePayload, PROTOCOL, type RobotInfo } from '../protocol';
+import { udpNativeAvailable } from './udpNative';
 
 function loadUdp() {
   try {
+    if (!udpNativeAvailable()) return null;
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const mod = require('react-native-udp');
     return (mod.default ?? mod) as {

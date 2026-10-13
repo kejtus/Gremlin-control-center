@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <title>RPilot Mikrofon</title>
+  <link rel="manifest" href="/manifest.json"/>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: #121212; color: #d8d8d8; font-family: ui-sans-serif, system-ui, sans-serif; }
+    body { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; gap: 20px; }
+    h1 { margin: 0; font-size: 18px; letter-spacing: 2px; color: #8a8a8a; }
+    p { margin: 0; text-align: center; color: #6e6e6e; font-size: 14px; line-height: 1.45; max-width: 22rem; }
+    button {
+      width: min(100%, 280px); border: 0; border-radius: 16px; padding: 18px 16px;
+      font-size: 16px; font-weight: 800; color: #fff; background: #334050;
+    }
+    button.live { background: #d63b3b; }
+    #st { font-family: ui-monospace, monospace; font-size: 12px; color: #8a8a8a; }
+    #st.ok { color: #5dffb0; }
+    #st.err { color: #ff8a8a; }
+  </style>
+</head>
+<body>
+  <h1>RPILOT MIC</h1>
+  <p>To osobny mikrofon. Działa bez Google. Po jednorazowej zgodzie na certyfikat i mikrofon — nagrywaj tutaj, tekst wpadnie do RPilot.</p>
+  <div id="st">gotowy</div>
+  <button id="btn" type="button">Nagrywaj</button>
+  <script>
+    const btn = document.getElementById('btn');
+    const st = document.getElementById('st');
+    let rec = null, stream = null, chunks = [], live = false, armed = false;
+
+    function setSt(t, cls) { st.textContent = t; st.className = cls || ''; }
+
+    function Rec() { return window.MediaRecorder; }
+
+    async function startRec() {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true } });
+      const MR = Rec();
+      chunks = [];
+      if (MR) {
+        const mime = MR.isTypeSupported('audio/webm') ? 'audio/webm' : (MR.isTypeSupported('audio/mp4') ? 'audio/mp4' : '');
+        rec = mime ? new MR(stream, { mimeType: mime }) : new MR(stream);
+        rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+        rec.start(200);
+      } else {
+        throw new Error('Brak MediaRecorder');
+      }
+      live = true;
+      btn.className = 'live';
+      btn.textContent = 'Zatrzymaj i wyślij';
+      setSt('REC', 'err');
+    }
+
+    async function stopRec() {
+      const blob = await new Promise((resolve, reject) => {
+        if (!rec) { resolve(new Blob()); return; }
+        rec.onerror = () => reject(new Error('stop'));
+        rec.onstop = () => resolve(new Blob(chunks, { type: rec.mimeType || 'audio/webm' }));
+        rec.stop();
+      });
+      try { stream && stream.getTracks().forEach((t) => t.stop()); } catch (e) {}
+      rec = null; stream = null; live = false;
+      btn.className = '';
+      btn.textContent = 'Nagrywaj';
+      if (!blob.size) { setSt('puste nagranie', 'err'); return; }
+      setSt('wysyłam…');
+      const buf = await blob.arrayBuffer();
+      const u8 = new Uint8Array(buf);
+      let bin = '';
+      for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+      const name = (blob.type || '').indexOf('mp4') >= 0 ? 'speech.m4a' : 'speech.webm';
+      const res = await fetch('/stt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ audio: btoa(bin), name: name })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { setSt(data.error || ('HTTP ' + res.status), 'err'); return; }
+      setSt(data.text ? ('OK: ' + data.text) : 'nic nie rozpoznałem', data.text ? 'ok' : 'err');
+    }
+
+    btn.onclick = async () => {
+      try {
+        if (live) await stopRec();
+        else await startRec();
+      } catch (e) {
+        setSt(String(e && e.message ? e.message : e), 'err');
+      }
+    };
+
+    async function watchArm() {
+      let last = false;
+      for (;;) {
+        try {
+          const r = await fetch('/wait?armed=' + (last ? '1' : '0'));
+          const d = await r.json();
+          if (d.armed && !last && !live) {
+            last = true;
+            await startRec();
+          } else if (!d.armed && last && live) {
+            last = false;
+            await stopRec();
+          } else {
+            last = !!d.armed;
+          }
+        } catch (e) {
+          await new Promise((x) => setTimeout(x, 1200));
+        }
+      }
+    }
+    watchArm();
+  </script>
+</body>
+</html>

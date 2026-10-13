@@ -21,6 +21,34 @@ python rpi/gremlin_discover.py
 
 Sidecar tylko odpowiada na `GREMLIN_DISCOVER` (UDP **45454**) adresem i portami. Sterowanie idzie prosto do Gremlina na `:8765` — nie zajmuje połączenia WS.
 
+## Aplikacja instalowalna (Android / iOS / HarmonyOS)
+
+Standalone (nie Expo Go): natywny UDP, mikrofon, bezpośrednie połączenie z Pi.
+
+| Platforma | Co instalujesz | Jak |
+| --- | --- | --- |
+| **Android** | APK | `npm run apk` → link z EAS → zainstaluj (nieznane źródła) |
+| **HarmonyOS** (z warstwą Android) | **ten sam APK** | sideload jak na Androidzie |
+| **HarmonyOS NEXT** (bez Androida) | — | **nie wspierane** (wymaga osobnej apki ArkTS) |
+| **iOS** | IPA | `npm run ipa` (profil `ios-preview` → store/TestFlight) → Apple Developer + EAS credentials |
+
+```bash
+# z korzenia repo (wymaga: npx eas-cli login)
+npm run apk          # Android + HarmonyOS (APK, profil preview)
+npm run ipa          # iOS (profil ios-preview → App Store Connect / TestFlight)
+npm run build:all    # Android APK + iOS (preview / ios-preview osobno — użyj apk+ipa)
+```
+
+Pierwszy build iOS uruchom **interaktywnie** (podpięcie Apple ID / certyfikatów):
+
+```bash
+cd mobile && npx eas-cli build -p ios --profile ios-preview
+```
+
+Profil EAS: `preview` (APK) i `ios-preview` (IPA) — [mobile/eas.json](mobile/eas.json). Po buildzie Expo pokaże URL / QR do pobrania.
+
+**Po instalacji:** telefon i Pi w tej samej Wi‑Fi → otwórz RPilot → IP robota (np. `192.168.1.215`) → jazda bez komputera.
+
 ## Aplikacja na telefonie (Expo Go)
 
 Szczegółowo: poniżej. Krótko:

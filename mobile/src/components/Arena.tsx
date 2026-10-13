@@ -39,7 +39,7 @@ export function Arena({ status, compact }: Props) {
 
 const styles = StyleSheet.create({
   box: {
-    backgroundColor: '#0b0f14',
+    backgroundColor: '#ececec',
     borderRadius: 18,
     borderWidth: 1,
     borderColor: colors.line,

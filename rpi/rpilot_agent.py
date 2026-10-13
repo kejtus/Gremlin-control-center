@@ -103,6 +103,12 @@ class GremlinSim:
         self.clients = 0
         self.video_sink: tuple[str, int] | None = None
         self.gpio: dict[str, int] = {}
+        self.device_power: dict[str, bool] = {
+            "OAK-D": True,
+            "LIDAR": True,
+            "MIC": True,
+            "SPEAKER": True,
+        }
 
     def info(self) -> dict[str, Any]:
         return {
@@ -189,6 +195,35 @@ class GremlinSim:
             self.gpio[str(msg.get("pin_name"))] = int(msg.get("value", 0))
         elif kind == "stream":
             self.stream_enabled = bool(msg.get("enabled"))
+            self.device_power["OAK-D"] = self.stream_enabled
+        elif kind == "device_power_status":
+            devices = msg.get("devices") or {}
+            if isinstance(devices, dict):
+                for key in self.device_power:
+                    if key in devices:
+                        self.device_power[key] = bool(devices[key])
+                self.stream_enabled = self.device_power.get("OAK-D", True)
+            return {
+                "type": "device_power_status",
+                "devices": dict(self.device_power),
+            }
+        elif kind == "set_device_power":
+            # kompatybilność wsteczna
+            device = str(msg.get("device") or "")
+            enabled = bool(msg.get("enabled"))
+            if device in self.device_power:
+                self.device_power[device] = enabled
+            if device == "OAK-D":
+                self.stream_enabled = enabled
+            return {
+                "type": "device_power_status",
+                "devices": dict(self.device_power),
+            }
+        elif kind == "get_device_power":
+            return {
+                "type": "device_power_status",
+                "devices": dict(self.device_power),
+            }
         elif kind == "register_video_sink":
             self.video_sink = (str(msg.get("host")), int(msg.get("port", 9000)))
         elif kind == "set_follow_band_mode":

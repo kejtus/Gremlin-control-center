@@ -1,48 +1,202 @@
 import { StatusBar } from 'expo-status-bar';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
-import { useEffect } from 'react';
-import {
-  Linking,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  useWindowDimensions,
-  View,
-} from 'react-native';
-import { Arena } from './src/components/Arena';
+import { useEffect, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { AccessibilityProvider, A11yCaptionBar, A11yPressable, a11yFont, useAccessibility } from './src/accessibility';
+import { A11yLiveRegion } from './src/components/A11yLiveRegion';
+import { AccessibilityPanel } from './src/components/AccessibilityPanel';
 import { ConnectPanel } from './src/components/ConnectPanel';
-import { Joystick } from './src/components/Joystick';
-import { TopBar } from './src/components/TopBar';
+import { DanceTab } from './src/components/DanceTab';
+import { DrivePane } from './src/components/DrivePane';
+import { FooterBar } from './src/components/FooterBar';
+import { GamepadTab } from './src/components/GamepadTab';
+import { LidarTab } from './src/components/LidarTab';
+import { PathTab } from './src/components/PathTab';
+import { ScratchTab } from './src/components/ScratchTab';
+import { SpeakerTab } from './src/components/SpeakerTab';
+import { StatusTab } from './src/components/StatusTab';
+import { TabBar, type AppTab } from './src/components/TabBar';
+import { VoiceTab } from './src/components/VoiceTab';
+import { buildPadSyncPackets } from './src/gamepadBindings';
+import { useLayout } from './src/layout';
 import { useRobot } from './src/net/useRobot';
-import { siteUrl } from './src/protocol';
-import { colors, radii } from './src/theme';
+import { loadPadBindings } from './src/storage';
+import { colors as defaultColors } from './src/theme';
 
-const POWERS = [0.25, 0.45, 0.7, 1];
-
-export default function App() {
+function AppShell() {
   const robot = useRobot();
-  const { width } = useWindowDimensions();
-  const wide = width >= 860;
   const online = robot.phase === 'online';
+  const live = online && !robot.preview;
+  const [tab, setTab] = useState<AppTab>('drive');
+  const [a11yOpen, setA11yOpen] = useState(false);
+  const layout = useLayout();
+  const { colors, textScale, announce, prefs } = useAccessibility();
+
+  const pickTab = (next: AppTab) => {
+    setTab(next);
+    const labels: Record<AppTab, string> = {
+      drive: 'Sterowanie',
+      lidar: 'Lidar',
+      dances: 'Tańce',
+      path: 'Trasa',
+      code: 'Scratch',
+      pad: 'Pad',
+      sounds: 'Dźwięki',
+      voice: 'Głos',
+      status: 'Status',
+    };
+    announce(`Zakładka ${labels[next]}`);
+  };
 
   useEffect(() => {
-    void activateKeepAwakeAsync('rpilot');
-    return () => deactivateKeepAwake('rpilot');
+    void activateKeepAwakeAsync('rpilot').catch(() => {});
+    return () => {
+      try {
+        deactivateKeepAwake('rpilot');
+      } catch {
+        /* ignore */
+      }
+    };
   }, []);
 
-  return (
-    <View style={styles.safe}>
-      <StatusBar style="light" />
-      <TopBar
-        phase={robot.phase}
-        active={robot.active}
-        status={robot.status}
-        transport={robot.transport}
-        onDisconnect={robot.disconnect}
-      />
+  // Po połączeniu z Pi — pad_config + keymap.json.
+  useEffect(() => {
+    if (!live) return;
+    let cancelled = false;
+    const t = setTimeout(() => {
+      void (async () => {
+        const bindings = await loadPadBindings();
+        if (cancelled) return;
+        robot.sendPackets(buildPadSyncPackets(bindings));
+      })();
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [live, robot.sendPackets]);
 
-      <ScrollView contentContainerStyle={styles.scroll} bounces={false}>
+  return (
+    <View style={[styles.shell, { paddingTop: layout.padTop, backgroundColor: colors.bg }]}>
+      <A11yLiveRegion />
+      <StatusBar style={prefs.highContrast ? 'light' : 'dark'} />
+      <View
+        style={[
+          styles.header,
+          {
+            paddingHorizontal: layout.headerPadX,
+            paddingTop: layout.headerPadY,
+            paddingBottom: layout.phone ? 8 : layout.compact ? 8 : 10,
+          },
+        ]}
+      >
+        <Text
+          style={[
+            styles.brand,
+            { fontSize: a11yFont(layout.brandSize, textScale), color: colors.ink },
+          ]}
+          accessibilityRole="header"
+        >
+          GREMLIN
+        </Text>
+        <View style={styles.previewRow}>
+          {robot.preview && layout.showPreviewTag ? (
+            <Text style={[styles.previewTag, { color: colors.muted, fontSize: a11yFont(11, textScale) }]}>
+              podgląd UI
+            </Text>
+          ) : null}
+          <A11yPressable
+            exploreId="header-a11y"
+            onPress={() => setA11yOpen(true)}
+            style={[
+              styles.a11yBtn,
+              {
+                backgroundColor: colors.accent,
+                borderColor: colors.ink,
+                minHeight: layout.phone ? 40 : 44,
+                paddingHorizontal: layout.phone ? 10 : 12,
+              },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="Ustawienia dostępności"
+            accessibilityHint="Duży tekst, kontrast, odczyt dwuklik"
+            hitSlop={10}
+          >
+            <Text
+              style={[
+                styles.a11yBtnText,
+                {
+                  color: colors.bg === '#000000' ? '#000' : '#fff',
+                  fontSize: a11yFont(layout.phone ? 12 : 13, textScale),
+                },
+              ]}
+            >
+              {layout.phone ? 'Aa' : 'Dostępność'}
+            </Text>
+          </A11yPressable>
+          {robot.preview ? (
+            <A11yPressable
+              exploreId="header-connect"
+              onPress={() => void robot.retry()}
+              style={[
+                styles.connectBtn,
+                { backgroundColor: colors.tabBar },
+                layout.phone && { paddingHorizontal: 8, paddingVertical: 4 },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Połącz z robotem"
+            >
+              <Text
+                style={[
+                  styles.connectText,
+                  {
+                    color: prefs.highContrast ? '#000' : '#fff',
+                    fontSize: a11yFont(layout.phone ? 11 : 12, textScale),
+                  },
+                ]}
+              >
+                Połącz
+              </Text>
+            </A11yPressable>
+          ) : null}
+        </View>
+      </View>
+
+      <View
+        style={[
+          styles.frame,
+          {
+            marginHorizontal: layout.cardMx,
+            marginBottom: layout.cardMb,
+            borderWidth: layout.cardBorder,
+            borderRadius: layout.cardRadius,
+            borderColor: colors.cardBorder,
+            backgroundColor: colors.card,
+          },
+        ]}
+      >
+        {online ? (
+          <TabBar value={tab} onChange={pickTab} embedded />
+        ) : (
+          <View
+            style={[
+              styles.tabStub,
+              {
+                height: layout.tabH,
+                backgroundColor: colors.tabBar,
+              },
+            ]}
+          />
+        )}
+
+      <View
+        style={[
+          styles.card,
+          {
+            backgroundColor: colors.card,
+          },
+        ]}
+      >
         {!online ? (
           <ConnectPanel
             phase={robot.phase}
@@ -50,276 +204,155 @@ export default function App() {
             error={robot.error}
             udpAvailable={robot.udpAvailable}
             onRetry={robot.retry}
+            onPreview={robot.enterUiPreview}
+            onOpenA11y={() => setA11yOpen(true)}
             onPick={(info) => void robot.connect(info)}
             onManual={(host) => void robot.connectManual(host)}
           />
+        ) : tab === 'drive' && robot.active ? (
+          <DrivePane
+            info={robot.active}
+            online={online}
+            onStream={robot.setStream}
+            onRegisterSink={robot.registerVideoSink}
+            onDrive={robot.drive}
+            remoteDrive={robot.drivePose}
+            onStop={robot.stop}
+          />
+        ) : tab === 'lidar' ? (
+          <LidarTab
+            points={robot.lidarPoints}
+            online={online && !robot.preview}
+            preview={robot.preview}
+            onPoll={robot.requestLidarPoints}
+          />
+        ) : tab === 'dances' ? (
+          <ScrollView contentContainerStyle={styles.scroll} bounces={false}>
+            <DanceTab onSendChannels={robot.sendChannels} onStop={robot.stop} />
+          </ScrollView>
+        ) : tab === 'path' ? (
+          <PathTab online={live} onDrive={robot.drive} onStop={robot.stop} />
+        ) : tab === 'code' ? (
+          <ScratchTab
+            online={live}
+            onDrive={robot.drive}
+            onStop={robot.stop}
+            onPlaySound={robot.playSound}
+            onStopSound={robot.stopSound}
+            devicePower={robot.devicePower}
+            batteryPct={robot.status?.batteryPct ?? 100}
+            onSetDevicePower={robot.setDevicePowerEnabled}
+          />
+        ) : tab === 'pad' ? (
+          <GamepadTab
+            online={live}
+            onSendPackets={robot.sendPackets}
+          />
+        ) : tab === 'sounds' ? (
+          <ScrollView contentContainerStyle={styles.scroll} bounces={false}>
+            <SpeakerTab
+              onPlay={robot.playSound}
+              onPlayUpload={robot.playUploadedSound}
+              onStop={robot.stopSound}
+            />
+          </ScrollView>
+        ) : tab === 'voice' ? (
+          <VoiceTab />
         ) : (
-          <View style={[styles.workspace, wide && styles.workspaceWide]}>
-            <View style={styles.driveCol}>
-              <Text style={styles.section}>Mecanum · WS :8765</Text>
-              <Text style={styles.hint}>
-                Góra/dół — jazda, lewo/prawo — ślizg. Przyciski obracają w miejscu.
-                Pakiety type/motor/channel/pwm jak w panelu Gremlina.
-              </Text>
-              <View style={styles.joyWrap}>
-                <Joystick onChange={(x, y) => robot.drive(x, y, 0)} disabled={!online} />
-              </View>
-              <View style={styles.yawRow}>
-                <Pressable
-                  onPressIn={() => robot.setOmega(-1)}
-                  onPressOut={() => robot.setOmega(0)}
-                  style={styles.yaw}
-                >
-                  <Text style={styles.cmdText}>Obrót L</Text>
-                </Pressable>
-                <Pressable
-                  onPressIn={() => robot.setOmega(1)}
-                  onPressOut={() => robot.setOmega(0)}
-                  style={styles.yaw}
-                >
-                  <Text style={styles.cmdText}>Obrót P</Text>
-                </Pressable>
-              </View>
-              <Text style={styles.powerLabel}>Moc {Math.round(robot.power * 100)}%</Text>
-              <View style={styles.cmds}>
-                {POWERS.map((p) => (
-                  <Pressable
-                    key={p}
-                    onPress={() => robot.setPower(p)}
-                    style={[styles.cmd, robot.power === p && styles.cmdOn]}
-                  >
-                    <Text style={styles.cmdText}>{Math.round(p * 100)}%</Text>
-                  </Pressable>
-                ))}
-              </View>
-              <Pressable onPress={robot.stop} style={styles.estop}>
-                <Text style={styles.estopText}>STOP</Text>
-              </Pressable>
-              <View style={styles.cmds}>
-                <Pressable onPress={() => void robot.command('beep')} style={styles.cmd}>
-                  <Text style={styles.cmdText}>Sygnał</Text>
-                </Pressable>
-                <Pressable onPress={() => void robot.command('follow')} style={styles.cmd}>
-                  <Text style={styles.cmdText}>Śledź taśmę</Text>
-                </Pressable>
-                <Pressable onPress={() => void robot.command('manual')} style={styles.cmd}>
-                  <Text style={styles.cmdText}>Ręczny</Text>
-                </Pressable>
-                {robot.active ? (
-                  <Pressable
-                    onPress={() => void Linking.openURL(siteUrl(robot.active!))}
-                    style={styles.cmd}
-                  >
-                    <Text style={styles.cmdText}>Panel Gremlin</Text>
-                  </Pressable>
-                ) : null}
-              </View>
-            </View>
-
-            <View style={styles.telemCol}>
-              <Text style={styles.section}>Arena i telemetria</Text>
-              <Arena status={robot.status} compact={!wide} />
-              <View style={styles.metrics}>
-                <Metric label="FL" value={wheel(robot.status, 'FL')} />
-                <Metric label="FR" value={wheel(robot.status, 'FR')} />
-                <Metric label="RL" value={wheel(robot.status, 'RL')} />
-                <Metric label="RR" value={wheel(robot.status, 'RR')} />
-              </View>
-              <Text style={styles.mode}>
-                Gremlin · {robot.status?.programOn === false ? 'program OFF' : 'program ON'}
-                {robot.status?.followBand ? ' · taśma' : ''}
-              </Text>
-              <Text style={styles.section}>Endpointy robota</Text>
-              {robot.endpoints.length === 0 ? (
-                <Text style={styles.hint}>Brak listy endpointów.</Text>
-              ) : (
-                robot.endpoints.map((e) => (
-                  <View key={`${e.method}${e.path}`} style={styles.ep}>
-                    <Text style={styles.epMethod}>{e.method}</Text>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.epPath}>{e.path}</Text>
-                      <Text style={styles.epSum}>{e.summary}</Text>
-                    </View>
-                  </View>
-                ))
-              )}
-            </View>
-          </View>
+          <ScrollView contentContainerStyle={styles.scroll} bounces={false}>
+            <StatusTab
+              online={live}
+              robotStatus={robot.status}
+              componentStatus={robot.componentStatus}
+              devicePower={robot.devicePower}
+              adsValues={robot.adsValues}
+              noiseProfile={robot.noiseProfile}
+              audioFilter={robot.audioFilter}
+              encoderTicks={robot.encoderTicks}
+              onPoll={robot.requestSystemStatus}
+              onSetDevicePower={robot.setDevicePowerEnabled}
+            />
+          </ScrollView>
         )}
-      </ScrollView>
+      </View>
+      </View>
+
+      <FooterBar percent={robot.status?.batteryPct ?? null} onOpenA11y={() => setA11yOpen(true)} />
+      <A11yCaptionBar />
+      <AccessibilityPanel visible={a11yOpen} onClose={() => setA11yOpen(false)} />
     </View>
   );
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
+export default function App() {
   return (
-    <View style={styles.metric}>
-      <Text style={styles.metricVal}>{value}</Text>
-      <Text style={styles.metricLabel}>{label}</Text>
-    </View>
+    <AccessibilityProvider>
+      <AppShell />
+    </AccessibilityProvider>
   );
-}
-
-function wheel(status: { wheels?: Record<string, number>; channels?: Record<number, number> } | null, role: string): string {
-  const mapped: Record<string, [number, number]> = { FL: [0, 1], FR: [3, 2], RL: [4, 5], RR: [7, 6] };
-  const fromWheels = status?.wheels?.[role];
-  if (fromWheels != null) return `${Math.round((fromWheels / 4095) * 100)}%`;
-  const pair = mapped[role];
-  if (!pair || !status?.channels) return '—';
-  const peak = Math.max(status.channels[pair[0]] ?? 0, status.channels[pair[1]] ?? 0);
-  return `${Math.round((peak / 4095) * 100)}%`;
 }
 
 const styles = StyleSheet.create({
-  safe: {
+  shell: {
     flex: 1,
-    backgroundColor: colors.bg,
-    paddingTop: 18,
+    backgroundColor: defaultColors.bg,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    zIndex: 10,
+  },
+  brand: {
+    fontWeight: '800',
+    letterSpacing: 0.6,
+  },
+  previewRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 2,
+  },
+  previewTag: {
+    fontWeight: '700',
+  },
+  a11yBtn: {
+    borderRadius: 12,
+    paddingVertical: 8,
+    minHeight: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    zIndex: 20,
+  },
+  a11yBtnText: {
+    fontWeight: '800',
+  },
+  connectBtn: {
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    minHeight: 36,
+    justifyContent: 'center',
+  },
+  connectText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  frame: {
+    flex: 1,
+    minHeight: 0,
+    overflow: 'hidden',
+    zIndex: 1,
+  },
+  tabStub: {},
+  card: {
+    flex: 1,
+    minHeight: 0,
   },
   scroll: {
-    paddingHorizontal: 20,
-    paddingBottom: 32,
-    gap: 16,
-  },
-  workspace: {
-    gap: 22,
-  },
-  workspaceWide: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 28,
-  },
-  driveCol: {
-    flex: 1.1,
-    minWidth: 280,
-  },
-  telemCol: {
-    flex: 1,
-    minWidth: 260,
-    gap: 10,
-  },
-  section: {
-    color: colors.text,
-    fontSize: 16,
-    fontWeight: '700',
-    marginBottom: 6,
-    marginTop: 4,
-  },
-  hint: {
-    color: colors.muted,
-    fontSize: 13,
-    lineHeight: 19,
-    marginBottom: 14,
-  },
-  joyWrap: {
-    alignItems: 'center',
-    marginVertical: 8,
-  },
-  yawRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 8,
-  },
-  yaw: {
-    flex: 1,
-    backgroundColor: colors.card,
-    borderColor: colors.line,
-    borderWidth: 1,
-    borderRadius: radii.md,
-    paddingVertical: 12,
-    alignItems: 'center',
-  },
-  powerLabel: {
-    color: colors.muted,
-    fontSize: 12,
-    marginBottom: 4,
-  },
-  estop: {
-    backgroundColor: colors.danger,
-    borderRadius: radii.md,
-    paddingVertical: 16,
-    alignItems: 'center',
-    marginTop: 12,
-  },
-  estopText: {
-    color: '#fff',
-    fontWeight: '800',
-    letterSpacing: 3,
-    fontSize: 18,
-  },
-  cmds: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginTop: 12,
-  },
-  cmd: {
-    backgroundColor: colors.card,
-    borderColor: colors.line,
-    borderWidth: 1,
-    borderRadius: 999,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-  },
-  cmdText: {
-    color: colors.text,
-    fontWeight: '600',
-  },
-  cmdOn: {
-    borderColor: colors.accent,
-    backgroundColor: colors.accentSoft,
-  },
-  metrics: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 8,
-  },
-  metric: {
-    flex: 1,
-    backgroundColor: colors.card,
-    borderRadius: radii.sm,
-    borderWidth: 1,
-    borderColor: colors.line,
-    padding: 10,
-  },
-  metricVal: {
-    color: colors.cyan,
-    fontWeight: '700',
-    fontVariant: ['tabular-nums'],
-  },
-  metricLabel: {
-    color: colors.muted,
-    fontSize: 11,
-    marginTop: 2,
-  },
-  mode: {
-    color: colors.muted,
-    fontSize: 12,
-    marginBottom: 8,
-  },
-  ep: {
-    flexDirection: 'row',
-    gap: 10,
-    alignItems: 'flex-start',
-    paddingVertical: 8,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.line,
-  },
-  epMethod: {
-    color: colors.accent,
-    fontSize: 11,
-    fontWeight: '800',
-    width: 48,
-    marginTop: 2,
-  },
-  epPath: {
-    color: colors.text,
-    fontFamily: 'monospace',
-    fontSize: 12,
-  },
-  epSum: {
-    color: colors.muted,
-    fontSize: 12,
-    marginTop: 2,
+    flexGrow: 1,
+    paddingBottom: 16,
   },
 });

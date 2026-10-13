@@ -1,5 +1,6 @@
 import { Buffer } from 'buffer';
 import type { RobotInfo, RobotStatus } from '../protocol';
+import { udpNativeAvailable } from './udpNative';
 
 export type UdpLink = {
   send: (packet: object) => void;
@@ -8,6 +9,7 @@ export type UdpLink = {
 
 function loadUdp() {
   try {
+    if (!udpNativeAvailable()) return null;
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const mod = require('react-native-udp');
     return (mod.default ?? mod) as {

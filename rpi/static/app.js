@@ -164,9 +164,44 @@ function attachJoystick() {
   ui.stick.addEventListener("pointercancel", end);
 }
 
+function parseHost(raw) {
+  const t = (raw || "").trim().replace(/\/$/, "");
+  if (!t) {
+    return { host: window.location.hostname, port: window.location.port || "3000" };
+  }
+  try {
+    if (t.startsWith("http://") || t.startsWith("https://")) {
+      const u = new URL(t);
+      return { host: u.hostname, port: u.port || "3000" };
+    }
+  } catch {
+    /* fall through */
+  }
+  const i = t.lastIndexOf(":");
+  if (i > 0 && /^\d+$/.test(t.slice(i + 1))) {
+    return { host: t.slice(0, i), port: t.slice(i + 1) };
+  }
+  return { host: t, port: "3000" };
+}
+
+function httpBases(raw) {
+  if (!raw) return [window.location.origin];
+  const { host, port } = parseHost(raw);
+  const ports = [port, "3000", "8742"].filter((p, idx, arr) => p && arr.indexOf(p) === idx);
+  return ports.map((p) => `http://${host}:${p}`);
+}
+
 function wsCandidates() {
   const host = base ? new URL(base.startsWith("http") ? base : `http://${base}`).hostname : window.location.hostname;
-  return [`ws://${window.location.host}/ws`, `ws://${host}:8765`];
+  const httpPort = base ? new URL(base.startsWith("http") ? base : `http://${base}`).port : window.location.port;
+  const urls = [`ws://${host}:8765`];
+  if (httpPort && httpPort !== "3000" && httpPort !== "8765") {
+    urls.push(`ws://${host}:${httpPort}/ws`);
+  }
+  if (base && new URL(base).host === window.location.host) {
+    urls.unshift(`ws://${window.location.host}/ws`);
+  }
+  return [...new Set(urls)];
 }
 
 function connectWs(index = 0) {
@@ -204,32 +239,52 @@ function connectWs(index = 0) {
 }
 
 async function connect(host) {
-  if (host) {
-    base = host.startsWith("http") ? host.replace(/\/$/, "") : `http://${host.replace(/\/$/, "")}`;
-  } else {
-    base = "";
+  const tries = httpBases(host);
+  let lastErr = null;
+  for (const candidate of tries) {
+    try {
+      base = candidate;
+      let info = null;
+      try {
+        info = await getJson("/api/info");
+      } catch {
+        info = null;
+      }
+      try {
+        const cfg = await getJson("/api/robot-config");
+        if (cfg.motors) pairs = cfg.motors;
+      } catch (err) {
+        if (!info) throw err;
+      }
+      localStorage.setItem(LAST_KEY, base || window.location.origin);
+      if (info) ui.name.textContent = info.name || "Gremlin";
+      else ui.name.textContent = "Gremlin";
+      try {
+        const [st, eps] = await Promise.all([getJson("/api/status"), getJson("/api/endpoints")]);
+        renderStatus(st);
+        renderEndpoints(eps.endpoints || []);
+      } catch {
+        renderEndpoints([
+          { method: "WS", path: `ws://${new URL(base).hostname}:8765`, summary: "Sterowanie Gremlin" },
+          { method: "HTTP", path: base, summary: "Panel HTTP" },
+        ]);
+      }
+      setLink(true, `${new URL(base).hostname} · Gremlin`);
+      connectWs();
+      return;
+    } catch (err) {
+      lastErr = err;
+    }
   }
-  const info = await getJson("/api/info");
-  ui.name.textContent = info.name || "Gremlin";
-  localStorage.setItem(LAST_KEY, base || window.location.origin);
-  try {
-    const cfg = await getJson("/api/robot-config");
-    if (cfg.motors) pairs = cfg.motors;
-  } catch {
-    /* keep defaults */
-  }
-  const [st, eps] = await Promise.all([getJson("/api/status"), getJson("/api/endpoints")]);
-  renderStatus(st);
-  renderEndpoints(eps.endpoints || []);
-  setLink(true, `${info.ip || "lokalnie"} · Gremlin`);
-  connectWs();
+  throw lastErr || new Error("connect failed");
 }
 
 async function autoConnect() {
-  setLink(false, "automatyczne łączenie…");
+  setLink(false, "łączenie z Pi 192.168.1.215…");
   const last = localStorage.getItem(LAST_KEY);
-  const tries = ["", last, window.location.origin].filter((v, i, a) => v !== undefined && a.indexOf(v) === i);
+  const tries = ["192.168.1.215:3000", last].filter((v, i, a) => v && a.indexOf(v) === i);
   for (const host of tries) {
+    if (host && /localhost|127\.0\.0\.1|:8742/i.test(host)) continue;
     try {
       await connect(host);
       return;

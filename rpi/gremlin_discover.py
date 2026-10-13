@@ -56,8 +56,10 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
         payload = {
             "id": ROBOT_ID,
             "name": ROBOT_NAME,
+            "host": local_ip(),
             "httpPort": SITE_PORT,
             "wsPort": WS_PORT,
+            "sitePort": SITE_PORT,
             "udpPort": 45455,
             "proto": 1,
         }
