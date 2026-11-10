@@ -29,10 +29,16 @@ import {
 import { DEFAULT_MOTOR_PAIRS } from '../mecanum';
 import { DEMO_COMPONENTS, DEMO_INFO, DEMO_STATUS } from '../demo';
 import { loadLastRobot, saveLastRobot } from '../storage';
-import { getDevServerHost } from './lanIp';
+import { setActiveRobot } from './activeRobot';
+import { decodeCameraFrameB64, publishCameraFrame } from './cameraFrames';
+import { getDevServerHost, getLanIp, getVideoSinkHost } from './lanIp';
+import { udpSocketAvailable } from './udpSocket';
 import { isExpoGo, isStandaloneNative, usesPcRelay } from './runtime';
 import { openUdpControl, type UdpLink } from './udpControl';
 import { discoverRobots, udpAvailable } from './udpDiscover';
+
+/** Gremlin auto-wyłącza program_manager bez get_program_status (~2 s). */
+const PROGRAM_HEARTBEAT_MS = 500;
 
 export type Phase = 'booting' | 'searching' | 'connecting' | 'online' | 'offline';
 
@@ -117,6 +123,7 @@ export function useRobot() {
   const wsRef = useRef<WebSocket | null>(null);
   const udpRef = useRef<UdpLink | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const scanRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const activeRef = useRef<RobotInfo | null>(BOOT_LIVE ? null : DEMO_INFO);
   const driveRef = useRef({ vy: 0, vx: 0, omega: 0, moving: false, power01: null as number | null });
@@ -146,6 +153,10 @@ export function useRobot() {
     if (pollRef.current) {
       clearInterval(pollRef.current);
       pollRef.current = null;
+    }
+    if (heartbeatRef.current) {
+      clearInterval(heartbeatRef.current);
+      heartbeatRef.current = null;
     }
     if (driveTimer.current) {
       clearInterval(driveTimer.current);
@@ -251,8 +262,22 @@ export function useRobot() {
         if (!candidates.includes(url)) candidates.push(url);
       }
       const attach = (ws: WebSocket) => {
+        ws.binaryType = 'arraybuffer';
         ws.onmessage = (ev) => {
           try {
+            // Binarka JPEG po WS (niektóre buildy Gremlina).
+            if (typeof ev.data !== 'string') {
+              let bytes: Uint8Array | null = null;
+              if (ev.data instanceof ArrayBuffer) bytes = new Uint8Array(ev.data);
+              else if (ArrayBuffer.isView(ev.data)) {
+                const v = ev.data as ArrayBufferView;
+                bytes = new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+              }
+              if (bytes && bytes.byteLength > 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+                publishCameraFrame(bytes);
+              }
+              return;
+            }
             const parsed = JSON.parse(String(ev.data)) as Record<string, unknown>;
             const type = typeof parsed.type === 'string' ? parsed.type : '';
             if (
@@ -305,6 +330,18 @@ export function useRobot() {
             }
             if (type === 'lidar_points') {
               setLidarPoints(parseLidarPoints(parsed.points));
+            }
+            // Gremlin (aktualny): klatki JPEG po tym samym WS co sterowanie — bez UDP/mostka.
+            if (type === 'camera_frame') {
+              const img =
+                (typeof parsed.image === 'string' && parsed.image) ||
+                (typeof parsed.jpeg === 'string' && parsed.jpeg) ||
+                (typeof parsed.frame === 'string' && parsed.frame) ||
+                '';
+              if (img) {
+                const jpeg = decodeCameraFrameB64(img);
+                if (jpeg) publishCameraFrame(jpeg);
+              }
             }
             const power = parseDevicePowerStatus(parsed as Record<string, unknown>);
             if (power) {
@@ -452,6 +489,7 @@ export function useRobot() {
         pairsRef.current = DEFAULT_MOTOR_PAIRS;
         activeRef.current = probed;
         setActive(probed);
+        setActiveRobot(probed.host, probed.sitePort || PROTOCOL.sitePort);
         await saveLastRobot(probed);
 
         const udp = probed.via !== 'same-origin' && udpAvailable() ? openUdpControl(probed, applyStatus) : null;
@@ -502,12 +540,49 @@ export function useRobot() {
           lastCommandAgeMs: null,
           clients: 1,
           mode: 'gremlin',
+          programOn: false,
           arena: { width: 10, height: 10 },
         });
         setEndpoints([
           { method: 'WS', path: `ws://${host}:${probed.wsPort || PROTOCOL.wsPort}`, summary: 'Sterowanie na Pi' },
           { method: 'UDP', path: `:${PROTOCOL.videoUdpPort}`, summary: 'Kamera JPEG z Pi' },
         ]);
+
+        // Kamera UDP: sink = IP tabletu (APK z react-native-udp) albo IP PC (Expo).
+        // Zapas bez UDP: sink = IP Pi → panel :3000/video.
+        let sinkHost: string | null = null;
+        if (usesPcRelay()) {
+          sinkHost = (await getVideoSinkHost()) || getDevServerHost() || null;
+        } else if (udpSocketAvailable()) {
+          sinkHost = (await getLanIp()) || null;
+        } else {
+          sinkHost = host;
+        }
+        if (sinkHost) {
+          sendJson({
+            type: 'register_video_sink',
+            host: sinkHost,
+            port: PROTOCOL.videoUdpPort,
+          });
+        }
+        sendJson({ type: 'set_program_status', status: 'on' });
+        sendJson({ type: 'stream', enabled: true });
+        setTimeout(() => {
+          if (sinkHost) {
+            sendJson({
+              type: 'register_video_sink',
+              host: sinkHost,
+              port: PROTOCOL.videoUdpPort,
+            });
+          }
+          sendJson({ type: 'stream', enabled: true });
+        }, 1200);
+
+        // Heartbeat jak panel Gremlina — inaczej Pi gasi PM po ~2 s.
+        if (heartbeatRef.current) clearInterval(heartbeatRef.current);
+        heartbeatRef.current = setInterval(() => {
+          sendJson({ type: 'get_program_status' });
+        }, PROGRAM_HEARTBEAT_MS);
 
         pollRef.current = setInterval(() => {
           sendJson({ type: 'get_ads1115_values' });
@@ -703,15 +778,22 @@ export function useRobot() {
   const disconnect = useCallback(() => {
     wantLink.current = false;
     stop();
+    try {
+      sendJson({ type: 'set_program_status', status: 'off' });
+      sendJson({ type: 'stream', enabled: false });
+    } catch {
+      /* ignore */
+    }
     teardownLink();
     previewRef.current = false;
     setPreview(false);
     activeRef.current = null;
+    setActiveRobot(null);
     setActive(null);
     setStatus(null);
     setLidarPoints([]);
     setPhase('offline');
-  }, [stop, teardownLink]);
+  }, [sendJson, stop, teardownLink]);
 
   const updatePower = useCallback((p: number) => {
     const v = clampStick(p) < 0 ? 0 : Math.min(1, p);
@@ -722,14 +804,29 @@ export function useRobot() {
 
   const playSound = useCallback(
     (file: string, volume = 1) => {
-      sendJson({ type: 'play_sound', file, volume: Math.max(0, Math.min(1, volume)) });
+      const vol = Math.max(0, Math.min(1, volume));
+      const path = soundControlPath(file.replace(/^\/+/, ''));
+      // Włącz głośnik na Pi, jeśli był wyłączony w Statusie.
+      if (!devicePowerRef.current.SPEAKER) {
+        const nextMap: DevicePowerMap = { ...devicePowerRef.current, SPEAKER: true };
+        sendWsJson(devicePowerStatusPacket(nextMap));
+        setDevicePower(nextMap);
+        devicePowerRef.current = nextMap;
+      }
+      sendJson({ type: 'play_sound', file: path, volume: vol });
     },
-    [sendJson],
+    [sendJson, sendWsJson],
   );
 
   const playUploadedSound = useCallback(
     (name: string, audioBase64: string, volume = 1) => {
       const file = soundControlPath(name.replace(/^\/+/, '') || 'upload.mp3');
+      if (!devicePowerRef.current.SPEAKER) {
+        const nextMap: DevicePowerMap = { ...devicePowerRef.current, SPEAKER: true };
+        sendWsJson(devicePowerStatusPacket(nextMap));
+        setDevicePower(nextMap);
+        devicePowerRef.current = nextMap;
+      }
       sendJson({
         type: 'play_sound',
         file,
@@ -737,7 +834,7 @@ export function useRobot() {
         audio_b64: audioBase64,
       });
     },
-    [sendJson],
+    [sendJson, sendWsJson],
   );
 
   const stopSound = useCallback(() => {
@@ -753,9 +850,13 @@ export function useRobot() {
 
   const registerVideoSink = useCallback(
     (udpPort = PROTOCOL.videoUdpPort, sinkHost?: string | null) => {
+      const host =
+        sinkHost ||
+        (activeRef.current ? robotHostname(activeRef.current.host) : null) ||
+        '127.0.0.1';
       sendJson({
         type: 'register_video_sink',
-        host: sinkHost || '0.0.0.0',
+        host,
         port: udpPort,
       });
     },

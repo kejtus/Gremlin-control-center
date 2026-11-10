@@ -22,6 +22,11 @@ export const PROTOCOL = {
   controlProxyPort: 8768,
   sttPort: 8769,
   sttHttpsPort: 8770,
+  /** ESP LiDAR WebSocket — ws://<pi>:8769/ws/esp_lidar (ESP_LIDAR_3D_EXPO.md). */
+  espLidarWsPort: 8769,
+  espLidarWsPath: '/ws/esp_lidar',
+  /** Opcjonalny UDP ELDP forward (nie wymagany przy WebSocket). */
+  espLidarUdpPort: 5010,
   videoMaxFps: 24,
   videoMaxJpegBytes: 700_000,
 } as const;

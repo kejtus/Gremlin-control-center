@@ -1,11 +1,12 @@
 import { Platform } from 'react-native';
 import { getDevServerHost } from '../lanIp';
+import { getActiveRobotHost } from '../activeRobot';
 import { PROTOCOL } from '../../protocol';
 
 /**
- * Host Whisper (opcjonalny).
- * Docelowe APK działa bez tego — STT jest na telefonie.
- * Dev: Metro PC. Później: EXPO_PUBLIC_STT_HOST=IP_Pi albo ten sam host co robot.
+ * Host Whisper.
+ * APK: najpierw Pi (połączony robot :8769), potem EXPO_PUBLIC_STT_HOST, potem PC Metro.
+ * Na HarmonyOS Intent mowy działa offline względem Whisper; to backup po nagraniu.
  */
 export function sttOrigin(): string | null {
   const env = process.env.EXPO_PUBLIC_STT_HOST?.trim();
@@ -13,6 +14,8 @@ export function sttOrigin(): string | null {
     const host = env.replace(/^https?:\/\//, '').split('/')[0].split(':')[0];
     if (host) return `http://${host}:${PROTOCOL.sttPort}`;
   }
+  const robot = getActiveRobotHost();
+  if (robot) return `http://${robot}:${PROTOCOL.sttPort}`;
   if (Platform.OS === 'web') {
     const host = typeof location !== 'undefined' ? location.hostname : '127.0.0.1';
     return `http://${host}:${PROTOCOL.sttPort}`;

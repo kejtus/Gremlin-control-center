@@ -8,6 +8,7 @@ import { AccessibilityPanel } from './src/components/AccessibilityPanel';
 import { ConnectPanel } from './src/components/ConnectPanel';
 import { DanceTab } from './src/components/DanceTab';
 import { DrivePane } from './src/components/DrivePane';
+import { FollowBandTab } from './src/components/FollowBandTab';
 import { FooterBar } from './src/components/FooterBar';
 import { GamepadTab } from './src/components/GamepadTab';
 import { LidarTab } from './src/components/LidarTab';
@@ -17,6 +18,7 @@ import { SpeakerTab } from './src/components/SpeakerTab';
 import { StatusTab } from './src/components/StatusTab';
 import { TabBar, type AppTab } from './src/components/TabBar';
 import { VoiceTab } from './src/components/VoiceTab';
+import { ErrorBoundary } from './src/ErrorBoundary';
 import { buildPadSyncPackets } from './src/gamepadBindings';
 import { useLayout } from './src/layout';
 import { useRobot } from './src/net/useRobot';
@@ -36,6 +38,7 @@ function AppShell() {
     setTab(next);
     const labels: Record<AppTab, string> = {
       drive: 'Sterowanie',
+      follow: 'Opaska',
       lidar: 'Lidar',
       dances: 'Tańce',
       path: 'Trasa',
@@ -58,6 +61,19 @@ function AppShell() {
       }
     };
   }, []);
+
+  // Połączenie / rozłączenie — ogłoszenie dla TTS i czytników ekranu.
+  useEffect(() => {
+    if (robot.phase === 'online') {
+      announce(
+        robot.preview
+          ? 'Tryb podglądu interfejsu. Robot nie jest podłączony.'
+          : `Połączono z robotem ${robot.active?.name || 'Gremlin'}. Program sterowania włączony.`,
+      );
+    } else if (robot.phase === 'offline' && robot.error) {
+      announce(robot.error);
+    }
+  }, [robot.phase]); // eslint-disable-line react-hooks/exhaustive-deps -- tylko zmiana fazy
 
   // Po połączeniu z Pi — pad_config + keymap.json.
   useEffect(() => {
@@ -219,12 +235,23 @@ function AppShell() {
             remoteDrive={robot.drivePose}
             onStop={robot.stop}
           />
+        ) : tab === 'follow' && robot.active ? (
+          <FollowBandTab
+            info={robot.active}
+            online={live}
+            followBand={robot.status?.followBand}
+            onStream={robot.setStream}
+            onRegisterSink={robot.registerVideoSink}
+            onFollowBands={(enabled) => {
+              void robot.command(enabled ? 'follow' : 'manual');
+              if (!enabled) robot.stop();
+            }}
+          />
         ) : tab === 'lidar' ? (
           <LidarTab
-            points={robot.lidarPoints}
+            host={robot.active?.host ?? null}
             online={online && !robot.preview}
             preview={robot.preview}
-            onPoll={robot.requestLidarPoints}
           />
         ) : tab === 'dances' ? (
           <ScrollView contentContainerStyle={styles.scroll} bounces={false}>
@@ -257,7 +284,13 @@ function AppShell() {
             />
           </ScrollView>
         ) : tab === 'voice' ? (
-          <VoiceTab />
+          <VoiceTab
+            online={live}
+            onDrive={robot.drive}
+            onStop={robot.stop}
+            onPlaySound={robot.playSound}
+            onFollowBands={(enabled) => void robot.command(enabled ? 'follow' : 'manual')}
+          />
         ) : (
           <ScrollView contentContainerStyle={styles.scroll} bounces={false}>
             <StatusTab
@@ -286,9 +319,11 @@ function AppShell() {
 
 export default function App() {
   return (
-    <AccessibilityProvider>
-      <AppShell />
-    </AccessibilityProvider>
+    <ErrorBoundary>
+      <AccessibilityProvider>
+        <AppShell />
+      </AccessibilityProvider>
+    </ErrorBoundary>
   );
 }
 
@@ -317,23 +352,24 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   a11yBtn: {
-    borderRadius: 12,
+    borderRadius: 10,
     paddingVertical: 8,
-    minHeight: 44,
+    minHeight: 40,
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 2,
+    borderWidth: 1.5,
     zIndex: 20,
   },
   a11yBtnText: {
-    fontWeight: '800',
+    fontWeight: '700',
   },
   connectBtn: {
-    borderRadius: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    minHeight: 36,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    minHeight: 40,
     justifyContent: 'center',
+    alignItems: 'center',
   },
   connectText: {
     color: '#fff',

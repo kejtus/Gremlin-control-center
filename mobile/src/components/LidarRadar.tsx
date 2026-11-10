@@ -8,26 +8,31 @@ type Props = {
   size: number;
 };
 
-/** Widok z góry bez natywnego canvas — kropki jako View (zdecymowane). */
+const MAX_DOTS = 520;
+
+/** Widok z góry (XY po tilt CCC) — kropki View, kolor = intensywność. */
 export function LidarRadar({ points, rangeM = 8, size }: Props) {
-  const scale = (size * 0.46) / rangeM;
+  const scale = (size * 0.46) / Math.max(0.5, rangeM);
   const cx = size / 2;
   const cy = size / 2;
 
   const dots = useMemo(() => {
-    const step = Math.max(1, Math.ceil(points.length / 160));
+    const step = Math.max(1, Math.ceil(points.length / MAX_DOTS));
     const out: { key: string; left: number; top: number; color: string }[] = [];
     for (let i = 0; i < points.length; i += step) {
-      const p = points[i];
-      const left = cx + p.x * scale - 2;
-      const top = cy - p.y * scale - 2;
+      const p = points[i]!;
+      // Układ jak CCC top-down: X w prawo, Y (tilted) w górę ekranu.
+      const left = cx + p.x * scale - 1.5;
+      const top = cy - p.y * scale - 1.5;
       if (left < -4 || top < -4 || left > size || top > size) continue;
       out.push({ key: `${i}`, left, top, color: p.color || '#5dffb0' });
     }
     return out;
   }, [points, scale, cx, cy, size]);
 
-  const rings = [2, 4, 6, 8].filter((r) => r <= rangeM);
+  const ringStep = rangeM <= 4 ? 1 : 2;
+  const rings: number[] = [];
+  for (let r = ringStep; r <= rangeM + 0.01; r += ringStep) rings.push(r);
 
   return (
     <View style={[styles.box, { width: size, height: size }]}>
@@ -84,9 +89,9 @@ const styles = StyleSheet.create({
   },
   dot: {
     position: 'absolute',
-    width: 4,
-    height: 4,
-    borderRadius: 2,
+    width: 3,
+    height: 3,
+    borderRadius: 1.5,
   },
   bot: {
     position: 'absolute',

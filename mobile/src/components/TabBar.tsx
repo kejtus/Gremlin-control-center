@@ -2,7 +2,17 @@ import { StyleSheet, Text, View } from 'react-native';
 import { A11yPressable, a11yFont, useAccessibility } from '../accessibility';
 import { useLayout } from '../layout';
 
-export type AppTab = 'drive' | 'lidar' | 'dances' | 'path' | 'code' | 'pad' | 'sounds' | 'voice' | 'status';
+export type AppTab =
+  | 'drive'
+  | 'follow'
+  | 'lidar'
+  | 'dances'
+  | 'path'
+  | 'code'
+  | 'pad'
+  | 'sounds'
+  | 'voice'
+  | 'status';
 
 type Props = {
   value: AppTab;
@@ -13,6 +23,7 @@ type Props = {
 
 const TAB_META: Record<AppTab, { label: string; short: string; hint: string }> = {
   drive: { label: 'Sterowanie', short: 'Ster', hint: 'Joystick, kamera i stop' },
+  follow: { label: 'Opaska', short: 'Opaska', hint: 'Kamera i podążanie za opaską na nodze' },
   lidar: { label: 'Lidar', short: 'Lidar', hint: 'Mapa otoczenia robota' },
   dances: { label: 'Tańce', short: 'Taniec', hint: 'Gotowe sekwencje ruchu' },
   path: { label: 'Trasa', short: 'Trasa', hint: 'Planowanie ścieżki na polu' },
@@ -25,6 +36,7 @@ const TAB_META: Record<AppTab, { label: string; short: string; hint: string }> =
 
 const TABS: { id: AppTab; Icon: typeof DriveIcon }[] = [
   { id: 'drive', Icon: DriveIcon },
+  { id: 'follow', Icon: FollowIcon },
   { id: 'lidar', Icon: LidarIcon },
   { id: 'dances', Icon: DanceIcon },
   { id: 'path', Icon: PathIcon },
@@ -173,6 +185,60 @@ function DriveIcon({ fg, hole, scale: s }: IconProps) {
           height: 8 * s,
           borderRadius: 4 * s,
           backgroundColor: hole,
+        }}
+      />
+    </View>
+  );
+}
+
+/** Osoba + „ogon” śledzenia — zakładka Opaska. */
+function FollowIcon({ fg, scale: s }: IconProps) {
+  return (
+    <View style={{ width: 36 * s, height: 28 * s }}>
+      <View
+        style={{
+          position: 'absolute',
+          left: 14 * s,
+          top: 2 * s,
+          width: 8 * s,
+          height: 8 * s,
+          borderRadius: 4 * s,
+          backgroundColor: fg,
+        }}
+      />
+      <View
+        style={{
+          position: 'absolute',
+          left: 12 * s,
+          top: 11 * s,
+          width: 12 * s,
+          height: 10 * s,
+          borderRadius: 3 * s,
+          backgroundColor: fg,
+        }}
+      />
+      <View
+        style={{
+          position: 'absolute',
+          left: 3 * s,
+          top: 20 * s,
+          width: 10 * s,
+          height: 3 * s,
+          borderRadius: 1.5 * s,
+          backgroundColor: fg,
+          opacity: 0.85,
+        }}
+      />
+      <View
+        style={{
+          position: 'absolute',
+          left: 24 * s,
+          top: 20 * s,
+          width: 8 * s,
+          height: 3 * s,
+          borderRadius: 1.5 * s,
+          backgroundColor: fg,
+          opacity: 0.55,
         }}
       />
     </View>

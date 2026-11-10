@@ -1,343 +1,236 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Platform } from 'react-native';
-import { startMic, type MicSession } from './mic/capture';
-import { startNativeRecord, nativeRecordAvailable, type NativeMicSession } from './mic/nativeRecord';
-import {
-  osSpeechAvailable,
-  startOsSpeech,
-  transcribeAudioUri,
-  type OsSpeechHandle,
-} from './mic/osSpeech';
-import { sttUrl, transcribeClip } from './mic/stt';
+import { PermissionsAndroid, Platform } from 'react-native';
+import { isExpoGo } from './runtime';
+import { startVoskSpeech, voskAvailable, type VoskHandle } from './mic/voskSpeech';
+import { parseVoiceCommand, type VoiceAction } from './voiceCommands';
 
-const MAX_MS = 20_000;
+/** Sesja ciągła — Vosk timeout → auto-restart dopóki użytkownik słucha. */
+const SESSION_MS = 90_000;
 
-function canLocalMic(): boolean {
-  const nav = globalThis as { navigator?: Navigator };
-  return !!nav.navigator?.mediaDevices?.getUserMedia;
-}
+type Mode = 'vosk' | 'none';
 
-type Mode = 'hybrid' | 'os' | 'native' | 'web' | 'none';
+type Options = {
+  /** Wywołane przy każdej rozpoznanej komendzie (ciągłe słuchanie). */
+  onAction?: (action: VoiceAction, raw: string) => void;
+};
 
 /**
- * Samodzielne APK: rozpoznawanie NA telefonie (OS).
- * Hybrid = OS (podgląd) + nagranie → OS file STT / opcjonalny Whisper (dev/Pi).
- * Whisper na PC to tylko pomoc przy Expo — docelowo nie jest wymagany.
+ * HyperOS bez Google Services — Intent „wyszukiwanie głosowe niedostępne”.
+ * Jedyna pewna ścieżka: Vosk offline w APK (model PL).
  */
 function detectMode(): Mode {
-  if (Platform.OS === 'web' && canLocalMic()) return 'web';
-  if (osSpeechAvailable() && nativeRecordAvailable()) return 'hybrid';
-  if (osSpeechAvailable()) return 'os';
-  if (nativeRecordAvailable()) return 'native';
-  if (canLocalMic()) return 'web';
+  if (isExpoGo() || Platform.OS === 'web') return 'none';
+  if (voskAvailable()) return 'vosk';
   return 'none';
 }
 
-export function usePhoneSpeech() {
+async function ensureMicPermission(): Promise<boolean> {
+  if (Platform.OS !== 'android') return true;
+  try {
+    const granted = await PermissionsAndroid.request(
+      PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+      {
+        title: 'Mikrofon RPilot',
+        message: 'RPilot potrzebuje mikrofonu do rozpoznawania komend offline (Vosk).',
+        buttonPositive: 'OK',
+        buttonNegative: 'Anuluj',
+      },
+    );
+    return granted === PermissionsAndroid.RESULTS.GRANTED;
+  } catch {
+    return false;
+  }
+}
+
+export function usePhoneSpeech(opts: Options = {}) {
   const [mode] = useState(detectMode);
-  const micRef = useRef<MicSession | null>(null);
-  const nativeRef = useRef<NativeMicSession | null>(null);
-  const osRef = useRef<OsSpeechHandle | null>(null);
+  const voskRef = useRef<VoskHandle | null>(null);
   const [listening, setListening] = useState(false);
   const [busy, setBusy] = useState(false);
   const [interim, setInterim] = useState('');
   const [lines, setLines] = useState<string[]>([]);
+  const [lastAction, setLastAction] = useState<VoiceAction | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [level, setLevel] = useState(0);
+  const [modelReady, setModelReady] = useState(false);
   const liveRef = useRef(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pathRef = useRef<'hybrid' | 'os' | 'native' | 'web' | null>(null);
-  const interimRef = useRef('');
-  const gotFinalRef = useRef(false);
+  const wantListenRef = useRef(false);
+  const lastRawRef = useRef('');
+  const lastAtRef = useRef(0);
+  const meterRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const onActionRef = useRef(opts.onAction);
+  onActionRef.current = opts.onAction;
+  const restartTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const clearTimer = () => {
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
+  useEffect(() => {
+    if (mode !== 'vosk') return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const vosk = await import('react-native-vosk');
+        await vosk.loadModel('model-pl-pl');
+        if (!cancelled) setModelReady(true);
+      } catch (err) {
+        if (!cancelled) {
+          setError(
+            err instanceof Error
+              ? `Model Vosk: ${err.message}`
+              : 'Nie załadowano modelu mowy (Vosk). Przebuduj APK.',
+          );
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [mode]);
+
+  const clearMeter = () => {
+    if (meterRef.current) {
+      clearInterval(meterRef.current);
+      meterRef.current = null;
+    }
+    setLevel(0);
+  };
+
+  const clearRestart = () => {
+    if (restartTimer.current) {
+      clearTimeout(restartTimer.current);
+      restartTimer.current = null;
     }
   };
 
   const resetUi = () => {
     liveRef.current = false;
-    pathRef.current = null;
-    clearTimer();
+    clearMeter();
     setListening(false);
     setBusy(false);
     setInterim('');
-    interimRef.current = '';
-    setLevel(0);
   };
 
-  const stopOs = async () => {
-    const handle = osRef.current;
-    osRef.current = null;
-    if (handle) await handle.stop().catch(() => undefined);
+  const stopVosk = async () => {
+    const h = voskRef.current;
+    voskRef.current = null;
+    if (h) await h.stop().catch(() => undefined);
   };
 
-  /** Nagranie → najpierw OS na telefonie, potem opcjonalnie Whisper. */
-  const transcribeRecording = async (clip: { uri: string; audio: string; name: string }) => {
-    let text = '';
-    if (osSpeechAvailable()) {
-      try {
-        text = await transcribeAudioUri(clip.uri, {
-          onPartial: (t) => {
-            setInterim(t);
-            interimRef.current = t;
-          },
-        });
-      } catch {
-        /* dalej Whisper */
-      }
-    }
-    if (!text && sttUrl()) {
-      text = await transcribeClip(clip.audio, clip.name);
-    }
-    return text.trim();
-  };
+  const handleUtterance = useCallback((text: string) => {
+    const raw = text.trim();
+    if (!raw) return;
+    const now = Date.now();
+    // Vosk czasem emituje ten sam final z onResult + onFinalResult.
+    if (raw === lastRawRef.current && now - lastAtRef.current < 800) return;
+    lastRawRef.current = raw;
+    lastAtRef.current = now;
 
-  const finishHybridOrNative = useCallback(async () => {
-    if (!liveRef.current && !nativeRef.current) return;
-    liveRef.current = false;
-    clearTimer();
-    setListening(false);
-
-    const pendingOs = interimRef.current.trim();
-    const hadFinal = gotFinalRef.current;
-
-    await stopOs();
-
-    const session = nativeRef.current;
-    nativeRef.current = null;
-
-    // Jeśli OS już oddał final / interim — nie czekaj na Whisper.
-    if (hadFinal) {
-      resetUi();
-      return;
-    }
-    if (pendingOs) {
-      setLines((prev) => [...prev, pendingOs]);
-      resetUi();
-      return;
-    }
-
-    if (!session) {
-      setError('Nic nie rozpoznałem — powtórz bliżej mikrofonu.');
-      resetUi();
-      return;
-    }
-
-    setBusy(true);
-    setInterim('rozpoznawanie…');
-    try {
-      const clip = await session.stop();
-      const text = await transcribeRecording(clip);
-      if (text) {
-        setLines((prev) => [...prev, text]);
-        setError(null);
-      } else {
-        setError(
-          sttUrl()
-            ? 'Nic nie rozpoznałem (telefon + Whisper). Powtórz wyraźniej.'
-            : 'Nic nie rozpoznałem. Sprawdź asystenta głosowego / Google Speech na telefonie (APK działa offline względem PC).',
-        );
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Nie udało się rozpoznać mowy.');
-    } finally {
-      setInterim('');
-      interimRef.current = '';
-      setBusy(false);
-      setLevel(0);
-      pathRef.current = null;
+    const action = parseVoiceCommand(raw);
+    setLines((prev) => {
+      const tag =
+        action.kind === 'unknown' ? raw : `${raw} → ${action.label}`;
+      return [...prev.slice(-40), tag];
+    });
+    setInterim('');
+    setError(null);
+    if (action.kind !== 'unknown') {
+      setLastAction(action);
+      onActionRef.current?.(action, raw);
     }
   }, []);
 
-  const finishWeb = useCallback(async () => {
-    if (!liveRef.current) return;
-    liveRef.current = false;
-    clearTimer();
-    setListening(false);
-    const session = micRef.current;
-    micRef.current = null;
-    if (!session) return;
-    setBusy(true);
-    setInterim('rozpoznawanie…');
-    try {
-      const clip = await session.stop();
-      if (!sttUrl()) {
-        throw new Error('W przeglądarce potrzebny Whisper (./start.sh) albo użyj APK na telefonie.');
-      }
-      const text = await transcribeClip(clip.audio, clip.name);
-      if (text) {
-        setLines((prev) => [...prev, text]);
-        setError(null);
-      } else {
-        setError('Nic nie rozpoznałem — powtórz bliżej mikrofonu.');
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Nie udało się rozpoznać mowy.');
-    } finally {
-      setInterim('');
-      setBusy(false);
-      setLevel(0);
-      pathRef.current = null;
-    }
-  }, []);
+  const beginSession = useCallback(async () => {
+    if (!wantListenRef.current) return;
+    if (voskRef.current) return;
 
-  const startNativeOnly = useCallback(async () => {
-    pathRef.current = 'native';
     liveRef.current = true;
-    gotFinalRef.current = false;
-    interimRef.current = '';
     setListening(true);
-    setError(null);
-    nativeRef.current = await startNativeRecord((db) => {
-      setLevel(Math.max(0, Math.min(1, (db + 60) / 60)));
-    });
-    timerRef.current = setTimeout(() => {
-      void finishHybridOrNative();
-    }, MAX_MS);
-  }, [finishHybridOrNative]);
-
-  const startHybrid = useCallback(async () => {
-    pathRef.current = 'hybrid';
-    liveRef.current = true;
-    gotFinalRef.current = false;
-    interimRef.current = '';
-    setListening(true);
+    setBusy(false);
+    setInterim(modelReady ? 'słucham…' : 'ładuję model…');
     setError(null);
 
-    // 1) Nagranie zawsze — backup gdy OS nie odda słów.
-    nativeRef.current = await startNativeRecord((db) => {
-      setLevel(Math.max(0, Math.min(1, (db + 60) / 60)));
-    });
+    let t = 0;
+    clearMeter();
+    meterRef.current = setInterval(() => {
+      t += 1;
+      setLevel(0.25 + 0.35 * (0.5 + 0.5 * Math.sin(t / 3)));
+    }, 120);
 
-    // 2) OS live — podgląd interim (może nie działać na Harmony / bez Google).
     try {
-      osRef.current = await startOsSpeech({
-        onPartial: (text) => {
-          setInterim(text);
-          interimRef.current = text;
-        },
-        onFinal: (text) => {
-          gotFinalRef.current = true;
-          setInterim('');
-          interimRef.current = '';
-          setLines((prev) => [...prev, text]);
-        },
-        onError: () => {
-          /* backup nagrania i tak zadziała */
-        },
-        onVolume: () => {
-          /* poziom z nagrania */
+      voskRef.current = await startVoskSpeech({
+        timeoutMs: SESSION_MS,
+        onPartial: (text) => setInterim(text),
+        onFinal: (text) => handleUtterance(text),
+        onError: (message) => {
+          setError(
+            `${message} (HyperOS: sprawdź uprawnienie mikrofonu dla RPilot; Google Speech nie jest wymagane.)`,
+          );
         },
         onEnd: () => {
-          osRef.current = null;
+          voskRef.current = null;
+          clearMeter();
+          if (!wantListenRef.current) {
+            resetUi();
+            return;
+          }
+          // Timeout sesji — restart bez przerywania trybu ciągłego.
+          setInterim('słucham…');
+          setListening(true);
+          clearRestart();
+          restartTimer.current = setTimeout(() => {
+            restartTimer.current = null;
+            void beginSession();
+          }, 250);
         },
       });
-    } catch {
-      osRef.current = null;
+      setModelReady(true);
+      setInterim('słucham…');
+    } catch (err) {
+      wantListenRef.current = false;
+      resetUi();
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Vosk nie wystartował. Odinstaluj starą RPilot i wgraj najnowsze APK.',
+      );
     }
-
-    timerRef.current = setTimeout(() => {
-      void finishHybridOrNative();
-    }, MAX_MS);
-  }, [finishHybridOrNative]);
+  }, [handleUtterance, modelReady]);
 
   const start = useCallback(async () => {
     setError(null);
-    if (liveRef.current || busy) return;
+    if (wantListenRef.current || busy) return;
     if (mode === 'none') {
-      setError('Mikrofon działa w APK. Expo Go bez natywnego mikrofonu — zbuduj APK.');
+      setError('Mikrofon offline działa tylko w zainstalowanym APK (Vosk), nie w Expo Go.');
       return;
     }
 
-    try {
-      if (mode === 'hybrid') {
-        await startHybrid();
-        return;
-      }
-      if (mode === 'os') {
-        liveRef.current = true;
-        pathRef.current = 'os';
-        gotFinalRef.current = false;
-        setListening(true);
-        osRef.current = await startOsSpeech({
-          onPartial: (t) => {
-            setInterim(t);
-            interimRef.current = t;
-          },
-          onFinal: (t) => {
-            gotFinalRef.current = true;
-            setInterim('');
-            interimRef.current = '';
-            setLines((prev) => [...prev, t]);
-          },
-          onError: (m) => setError(m),
-          onVolume: (v) => setLevel(Math.max(0, Math.min(1, (v + 2) / 12))),
-          onEnd: () => {
-            osRef.current = null;
-            const pending = interimRef.current.trim();
-            if (!gotFinalRef.current && pending) setLines((prev) => [...prev, pending]);
-            else if (!gotFinalRef.current) {
-              setError((e) => e || 'Silnik systemowy nic nie rozpoznał.');
-            }
-            resetUi();
-          },
-        });
-        timerRef.current = setTimeout(() => {
-          void stopOs();
-        }, MAX_MS);
-        return;
-      }
-      if (mode === 'native') {
-        await startNativeOnly();
-        return;
-      }
-      pathRef.current = 'web';
-      micRef.current = await startMic({ onLevel: setLevel });
-      liveRef.current = true;
-      setListening(true);
-      timerRef.current = setTimeout(() => {
-        void finishWeb();
-      }, MAX_MS);
-    } catch (err) {
-      resetUi();
-      setError(err instanceof Error ? err.message : 'Nie udało się włączyć mikrofonu.');
+    const ok = await ensureMicPermission();
+    if (!ok) {
+      setError('Brak zgody na mikrofon — włącz w ustawieniach aplikacji RPilot.');
+      return;
     }
-  }, [busy, finishWeb, mode, startHybrid, startNativeOnly]);
+
+    wantListenRef.current = true;
+    await beginSession();
+  }, [beginSession, busy, mode]);
 
   const stop = useCallback(() => {
-    const path = pathRef.current;
-    if (path === 'hybrid' || path === 'native') {
-      void finishHybridOrNative();
+    wantListenRef.current = false;
+    clearRestart();
+    if (!liveRef.current && !voskRef.current) {
+      resetUi();
       return;
     }
-    if (path === 'os') {
-      void stopOs();
-      setTimeout(() => {
-        if (pathRef.current === 'os' || liveRef.current) {
-          const pending = interimRef.current.trim();
-          if (!gotFinalRef.current && pending) setLines((prev) => [...prev, pending]);
-          resetUi();
-        }
-      }, 2000);
-      return;
-    }
-    if (path === 'web' || mode === 'web') {
-      void finishWeb();
-    }
-  }, [finishHybridOrNative, finishWeb, mode]);
+    setBusy(true);
+    setInterim('zatrzymuję…');
+    void stopVosk().then(() => resetUi());
+  }, []);
 
   useEffect(
     () => () => {
+      wantListenRef.current = false;
+      clearRestart();
       liveRef.current = false;
-      clearTimer();
-      void stopOs();
-      void nativeRef.current?.stop().catch(() => undefined);
-      nativeRef.current = null;
-      void micRef.current?.stop().catch(() => undefined);
-      micRef.current = null;
+      clearMeter();
+      void stopVosk();
     },
     [],
   );
@@ -345,17 +238,21 @@ export function usePhoneSpeech() {
   return {
     supported: mode !== 'none',
     mode,
+    huaweiHint: false,
+    modelReady,
     listening,
     busy,
     interim,
     lines,
+    lastAction,
     error,
     level,
     start,
     stop,
+    openGoogleSpeechStore: () => undefined,
     toggle() {
       if (busy && !listening) return;
-      if (listening || liveRef.current) stop();
+      if (listening || wantListenRef.current) stop();
       else void start();
     },
   };

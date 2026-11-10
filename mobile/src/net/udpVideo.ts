@@ -7,6 +7,7 @@ export function openVideoIngress(
   _port: number,
   onFrame: (jpeg: Uint8Array) => void,
   onEvent?: (ev: VideoEvent) => void,
+  _robotHost?: string | null,
 ): VideoLink | null {
   return openJpegWs(localVideoBridgeUrl(), onFrame, onEvent);
 }

@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
+import { useAccessibility } from '../accessibility';
 import { isUiPreview } from '../demo';
+import { publishCameraFrame, subscribeCameraFrames } from '../net/cameraFrames';
+import { createFramePump } from '../net/jpegFrames';
 import { getLanIp, getVideoSinkHost } from '../net/lanIp';
 import { usesPcRelay } from '../net/runtime';
-import { createFramePump } from '../net/jpegFrames';
 import { openVideoIngress, type VideoLink } from '../net/udpVideo';
-import { PROTOCOL, type RobotInfo } from '../protocol';
+import { udpSocketAvailable } from '../net/udpSocket';
+import { PROTOCOL, robotHostname, type RobotInfo } from '../protocol';
 import { DemoCameraScene } from './DemoCameraScene';
 import { JpegSwap, type JpegSwapHandle } from './JpegSwap';
 
@@ -17,100 +20,103 @@ type Props = {
   onRegisterSink: (udpPort: number, sinkHost?: string | null) => void;
 };
 
+/**
+ * APK: Pi → UDP JPEG → tablet :9000 (sink = IP tabletu).
+ * Expo Go: mostek PC. Zapas APK bez UDP: panel :3000/video + sink = IP Pi.
+ */
 export function CameraPreview({ info, height, rotated, onStream, onRegisterSink }: Props) {
+  const { announce } = useAccessibility();
   const [live, setLive] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const linkRef = useRef<VideoLink | null>(null);
   const swapRef = useRef<JpegSwapHandle | null>(null);
+  const linkRef = useRef<VideoLink | null>(null);
   const liveRef = useRef(false);
   const demo = isUiPreview(info);
+  const announceRef = useRef(announce);
+  announceRef.current = announce;
+  const piHost = robotHostname(info.host);
 
   useEffect(() => {
     if (demo) return;
     let cancelled = false;
     let noFrameTimer: ReturnType<typeof setTimeout> | null = null;
-    let sinkPulse: ReturnType<typeof setInterval> | null = null;
-    const port = PROTOCOL.videoUdpPort;
+    let pulse: ReturnType<typeof setInterval> | null = null;
+    let sinkHost: string | null = null;
+
     const pump = createFramePump((jpeg) => {
       swapRef.current?.push(jpeg);
     });
 
-    let started = false;
-    let sinkHost: string | null = null;
-    const startSink = async () => {
+    const onJpeg = (jpeg: Uint8Array) => {
       if (cancelled) return;
-      sinkHost = usesPcRelay() ? await getVideoSinkHost() : await getLanIp();
-      if (cancelled) return;
-      onRegisterSink(port, sinkHost);
-      onStream(true);
-      if (!started) {
-        started = true;
-        // Expo Go / proxy: Pi czasem gubi sink — odświeżaj co kilka s (tylko LAN).
-        if (usesPcRelay()) {
-          sinkPulse = setInterval(() => {
-            if (cancelled || !sinkHost) return;
-            onRegisterSink(port, sinkHost);
-            onStream(true);
-          }, 4000);
+      pump.push(jpeg);
+      if (!liveRef.current) {
+        liveRef.current = true;
+        setLive(true);
+        setError(null);
+        announceRef.current('Kamera działa — obraz na żywo');
+        if (noFrameTimer) {
+          clearTimeout(noFrameTimer);
+          noFrameTimer = null;
         }
-      }
-      if (!noFrameTimer) {
-        noFrameTimer = setTimeout(() => {
-          if (cancelled || liveRef.current) return;
-          const hint = usesPcRelay()
-            ? `Mostek OK, brak klatek UDP na PC:${port}. Pi (${info.host}) i PC w tej samej Wi‑Fi. Sink: ${sinkHost || '?'}.`
-            : `Brak klatek UDP na telefon:${port}. Sprawdź, czy Pi wysyła stream (OAK-D włączone).`;
-          setError(hint);
-        }, 4500);
       }
     };
 
+    const unsub = subscribeCameraFrames(onJpeg);
+
     const link = openVideoIngress(
-      port,
-      (jpeg) => {
-        if (cancelled) return;
-        pump.push(jpeg);
-        if (!liveRef.current) {
-          liveRef.current = true;
-          setLive(true);
-          setError(null);
-          if (noFrameTimer) {
-            clearTimeout(noFrameTimer);
-            noFrameTimer = null;
-          }
-        }
-      },
+      PROTOCOL.videoUdpPort,
+      (jpeg) => publishCameraFrame(jpeg),
       (ev) => {
         if (cancelled) return;
-        if (ev.type === 'open') {
-          setError(null);
-          void startSink();
-        }
-        if (ev.type === 'error') setError(ev.message ?? 'Kamera niedostępna');
-        if (ev.type === 'close') {
-          liveRef.current = false;
-          setLive(false);
+        if (ev.type === 'open') setError(null);
+        if (ev.type === 'error' && ev.message && !liveRef.current) {
+          /* czekamy na klatki / drugi tor */
         }
       },
+      piHost,
     );
-    if (link) {
-      linkRef.current = link;
-      if (link.mode === 'udp') void startSink();
-      setTimeout(() => {
-        void startSink();
-      }, 800);
-    }
+    linkRef.current = link;
+    const mode = link?.mode ?? 'bridge';
+
+    const resolveSink = async (): Promise<string | null> => {
+      if (usesPcRelay()) return getVideoSinkHost();
+      if (mode === 'udp' || udpSocketAvailable()) return getLanIp();
+      return piHost;
+    };
+
+    const arm = async () => {
+      if (cancelled) return;
+      sinkHost = await resolveSink();
+      if (cancelled) return;
+      onStream(true);
+      onRegisterSink(PROTOCOL.videoUdpPort, sinkHost);
+    };
+    void arm();
+    setTimeout(() => void arm(), 600);
+    pulse = setInterval(() => void arm(), 3000);
+
+    noFrameTimer = setTimeout(() => {
+      if (cancelled || liveRef.current) return;
+      setError(
+        mode === 'udp'
+          ? `Brak UDP JPEG na tablecie :${PROTOCOL.videoUdpPort}. Sink: ${sinkHost || '?'}. Pi i tablet w tej samej Wi‑Fi, stream ON.`
+          : `Brak klatek (WS/UDP). Pi ${piHost}, panel :3000 albo UDP :9000.`,
+      );
+    }, 7000);
 
     return () => {
       cancelled = true;
+      unsub();
       if (noFrameTimer) clearTimeout(noFrameTimer);
-      if (sinkPulse) clearInterval(sinkPulse);
+      if (pulse) clearInterval(pulse);
       onStream(false);
-      pump.close();
       linkRef.current?.close();
       linkRef.current = null;
+      pump.close();
+      liveRef.current = false;
     };
-  }, [demo, info.host, onRegisterSink, onStream]);
+  }, [demo, piHost, onRegisterSink, onStream]);
 
   const frameStyle = height ? [styles.frame, { height }] : [styles.frame, styles.fill];
 
@@ -123,10 +129,23 @@ export function CameraPreview({ info, height, rotated, onStream, onRegisterSink 
   }
 
   return (
-    <View style={frameStyle}>
+    <View
+      style={frameStyle}
+      accessible
+      accessibilityLabel={
+        live
+          ? 'Podgląd kamery — obraz na żywo'
+          : error
+            ? `Kamera: ${error}`
+            : 'Oczekiwanie na obraz z kamery'
+      }
+      accessibilityLiveRegion="polite"
+    >
       <JpegSwap ref={swapRef} height={height} rotated={rotated} />
       {!live ? (
-        <Text style={styles.placeholder}>{error ?? 'Oczekiwanie na kamerę…'}</Text>
+        <Text style={styles.placeholder} accessibilityRole="text">
+          {error ?? 'Oczekiwanie na kamerę…'}
+        </Text>
       ) : null}
     </View>
   );

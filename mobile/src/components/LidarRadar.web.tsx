@@ -7,7 +7,7 @@ type Props = {
   size?: number;
 };
 
-/** Widok z góry (XY) — canvas na web. */
+/** Widok z góry (XY po tilt CCC) — canvas na web. */
 export function LidarRadar({ points, rangeM = 8 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -31,11 +31,12 @@ export function LidarRadar({ points, rangeM = 8 }: Props) {
 
     const cx = w / 2;
     const cy = h / 2;
-    const scale = (Math.min(w, h) * 0.46) / rangeM;
+    const scale = (Math.min(w, h) * 0.46) / Math.max(0.5, rangeM);
 
     ctx.strokeStyle = 'rgba(255,255,255,0.12)';
     ctx.lineWidth = 1;
-    for (let r = 2; r <= rangeM; r += 2) {
+    const ringStep = rangeM <= 4 ? 1 : 2;
+    for (let r = ringStep; r <= rangeM + 0.01; r += ringStep) {
       ctx.beginPath();
       ctx.arc(cx, cy, r * scale, 0, Math.PI * 2);
       ctx.stroke();
@@ -47,12 +48,14 @@ export function LidarRadar({ points, rangeM = 8 }: Props) {
     ctx.lineTo(w - 8, cy);
     ctx.stroke();
 
-    // Przód = -Y w typowym układzie LiDAR → rysujemy w górę ekranu.
-    for (const p of points) {
+    const maxDots = 4000;
+    const step = Math.max(1, Math.ceil(points.length / maxDots));
+    for (let i = 0; i < points.length; i += step) {
+      const p = points[i]!;
       const px = cx + p.x * scale;
       const py = cy - p.y * scale;
       ctx.fillStyle = p.color || '#5dffb0';
-      ctx.fillRect(px - 1.5, py - 1.5, 3, 3);
+      ctx.fillRect(px - 1.2, py - 1.2, 2.4, 2.4);
     }
 
     ctx.fillStyle = '#7eb6d4';

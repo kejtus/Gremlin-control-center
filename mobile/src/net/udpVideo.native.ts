@@ -2,30 +2,14 @@ import { Buffer } from 'buffer';
 import { JpegAssembler } from './jpegFrames';
 import { openJpegWs, type VideoEvent, type VideoLink } from './jpegWs';
 import { getDevServerHost } from './lanIp';
-import { PROTOCOL } from '../protocol';
+import { getActiveRobotHost, getActiveSitePort } from './activeRobot';
+import { PROTOCOL, robotHostname, videoWsUrl } from '../protocol';
 import { usesPcRelay } from './runtime';
-import { udpNativeAvailable } from './udpNative';
+import { loadUdpFactory } from './udpSocket';
 
 export type { VideoEvent, VideoLink };
 
-function loadUdp() {
-  try {
-    if (!udpNativeAvailable()) return null;
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const mod = require('react-native-udp');
-    return (mod.default ?? mod) as {
-      createSocket: (opts: { type: string; reusePort?: boolean }) => {
-        on: (ev: string, cb: (...args: unknown[]) => void) => void;
-        bind: (port: number, address?: string, cb?: () => void) => void;
-        close: () => void;
-      };
-    };
-  } catch {
-    return null;
-  }
-}
-
-function openBridge(
+function openBridgeOnPc(
   onFrame: (jpeg: Uint8Array) => void,
   onEvent?: (ev: VideoEvent) => void,
 ): VideoLink | null {
@@ -34,7 +18,7 @@ function openBridge(
     onEvent?.({
       type: 'error',
       message:
-        'Expo Go: nie znam IP PC. Otwórz exp://<IP_PC>:41782 w tej samej Wi‑Fi (bez internetu) i odpal ./start.sh.',
+        'Expo Go: nie znam IP PC. Otwórz exp://<IP_PC>:41782 w tej samej Wi‑Fi i odpal ./start.sh.',
     });
     return null;
   }
@@ -43,7 +27,7 @@ function openBridge(
     if (ev.type === 'error') {
       onEvent?.({
         type: 'error',
-        message: `Brak klatek z ${url} (LAN). Na PC: ./start.sh — mostek :${PROTOCOL.videoBridgePort}.`,
+        message: `Brak klatek z ${url}. Na PC: ./start.sh — mostek :${PROTOCOL.videoBridgePort}.`,
       });
       return;
     }
@@ -51,17 +35,37 @@ function openBridge(
   });
 }
 
+function openSiteVideo(
+  robotHost: string,
+  onFrame: (jpeg: Uint8Array) => void,
+  onEvent?: (ev: VideoEvent) => void,
+): VideoLink | null {
+  const host = robotHostname(robotHost);
+  const siteUrl = videoWsUrl({ host, sitePort: getActiveSitePort() || PROTOCOL.sitePort });
+  return openJpegWs(siteUrl, onFrame, (ev) => {
+    if (ev.type === 'error') {
+      onEvent?.({
+        type: 'error',
+        message: `Brak ws://${host}:3000/video (zapas). Preferowany tor: UDP :${PROTOCOL.videoUdpPort} na tablet.`,
+      });
+      return;
+    }
+    onEvent?.(ev);
+  });
+}
+
+/** APK: najpierw UDP JPEG na telefonie; zapas = panel :3000/video. */
 export function openVideoIngress(
   port: number,
   onFrame: (jpeg: Uint8Array) => void,
   onEvent?: (ev: VideoEvent) => void,
+  robotHost?: string | null,
 ): VideoLink | null {
-  // Expo Go: zawsze mostek WS na PC (Pi → UDP → PC → WS → telefon). Offline / tylko router.
   if (usesPcRelay()) {
-    return openBridge(onFrame, onEvent);
+    return openBridgeOnPc(onFrame, onEvent);
   }
 
-  const dgram = loadUdp();
+  const dgram = loadUdpFactory();
   if (dgram) {
     let socket: ReturnType<typeof dgram.createSocket> | null = null;
     try {
@@ -77,7 +81,7 @@ export function openVideoIngress(
         if (frame) onFrame(frame);
       });
       socket.on('error', () => {
-        onEvent?.({ type: 'error', message: `UDP :${port || PROTOCOL.videoUdpPort} — błąd gniazda.` });
+        onEvent?.({ type: 'error', message: `UDP kamera :${port || PROTOCOL.videoUdpPort} — błąd.` });
       });
       socket.bind(port || PROTOCOL.videoUdpPort, '0.0.0.0', () => onEvent?.({ type: 'open' }));
       return {
@@ -94,9 +98,14 @@ export function openVideoIngress(
     }
   }
 
+  const host = robotHost || getActiveRobotHost();
+  if (host) {
+    return openSiteVideo(host, onFrame, onEvent);
+  }
+
   onEvent?.({
     type: 'error',
-    message: 'Kamera: Pi musi wysyłać JPEG UDP na ten telefon (:9000). W APK nie potrzeba mostka na PC.',
+    message: 'Kamera: brak UDP i brak hosta Pi.',
   });
   return null;
 }

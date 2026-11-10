@@ -52,6 +52,20 @@ export function openJpegWs(
       take(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
     } else if (typeof Blob !== 'undefined' && data instanceof Blob) {
       void data.arrayBuffer().then((buf) => take(new Uint8Array(buf)));
+    } else if (typeof data === 'string') {
+      // Panel Gremlina czasem śle JSON { jpeg: "base64..." } zamiast binarki.
+      try {
+        const parsed = JSON.parse(data) as { jpeg?: string; frame?: string; data?: string };
+        const b64 = parsed.jpeg || parsed.frame || parsed.data;
+        if (b64 && typeof b64 === 'string') {
+          const bin = atob(b64.includes(',') ? b64.split(',').pop()! : b64);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          take(bytes);
+        }
+      } catch {
+        /* ignore non-frame text */
+      }
     }
   };
   ws.onerror = () => {

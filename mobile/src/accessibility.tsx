@@ -46,7 +46,8 @@ export type AccessibilityPrefs = {
 export const DEFAULT_A11Y: AccessibilityPrefs = {
   largeText: false,
   highContrast: false,
-  tabLabels: false,
+  /** Domyślnie włączone — ikona nie jest jedynym nośnikiem nazwy (WCAG 1.3.3 / 1.4.1). */
+  tabLabels: true,
   reduceMotion: false,
   announceChanges: true,
   largeTouchTargets: false,
@@ -118,10 +119,17 @@ function pickPolishVoice(): SpeechSynthesisVoice | null {
 let speakSeq = 0;
 let voicesCache: Awaited<ReturnType<typeof Speech.getAvailableVoicesAsync>> | null = null;
 
-async function loadVoices() {
-  if (voicesCache?.length) return voicesCache;
+/** Google NIE jest wymagany — Huawei / Samsung / Pico / cokolwiek ustawione jako domyślny TTS. */
+async function loadVoices(force = false) {
+  if (!force && voicesCache && voicesCache.length > 0) return voicesCache;
   try {
-    voicesCache = await Speech.getAvailableVoicesAsync();
+    // Android: silnik bywa lazy — druga próba po krótkim wait.
+    let list = await Speech.getAvailableVoicesAsync();
+    if (!list.length) {
+      await new Promise((r) => setTimeout(r, 400));
+      list = await Speech.getAvailableVoicesAsync();
+    }
+    voicesCache = list;
   } catch {
     voicesCache = [];
   }
@@ -149,22 +157,13 @@ function pickVoice(
 }
 
 /**
- * TTS — bez uprawnień.
- * 1) czekamy na gotowość silnika (getVoices),
- * 2) nie wołamy expo-audio (zabija focus na Androidzie),
- * 3) language = tylko "pl" na Androidzie (bug Locale w expo-speech).
+ * TTS — dowolny systemowy silnik (nie tylko Google).
+ * HyperOS: najpierw z audio session (STREAM_MUSIC), potem bez, potem z language.
  */
-function speakNow(message: string, lang = 'pl-PL') {
-  const text = message.trim();
-  if (!text) return;
-  const seq = ++speakSeq;
-
-  if (Platform.OS === 'web') {
-    speakWebFallback(text, lang, seq);
-    return;
-  }
-
+function speakNative(text: string, lang = 'pl') {
+  const prefer = androidLangCode(lang);
   void (async () => {
+    const seq = speakSeq;
     const voices = await loadVoices();
     if (seq !== speakSeq) return;
 
@@ -175,59 +174,57 @@ function speakNow(message: string, lang = 'pl-PL') {
     }
     if (seq !== speakSeq) return;
 
-    const prefer = androidLangCode(lang);
     const voice = pickVoice(voices, prefer);
     const language =
       Platform.OS === 'android'
         ? androidLangCode(voice?.language || prefer)
-        : voice?.language || lang;
+        : voice?.language || 'pl-PL';
 
-    const opts: Speech.SpeechOptions = {
-      language,
-      pitch: 1,
-      rate: 1,
-      volume: 1,
-      useApplicationAudioSession: false,
-      onError: () => {
-        if (seq !== speakSeq) return;
-        try {
-          // Bez language / voice — czysty default systemowy
-          Speech.speak(text, {
-            pitch: 1,
-            rate: 1,
-            volume: 1,
-            useApplicationAudioSession: false,
-          });
-        } catch {
-          try {
-            AccessibilityInfo.announceForAccessibility(text);
-          } catch {
-            /* ignore */
-          }
-        }
-      },
-    };
-    if (voice?.identifier) opts.voice = voice.identifier;
+    const attempts: Speech.SpeechOptions[] = [
+      { pitch: 1, rate: 0.95, volume: 1, useApplicationAudioSession: true },
+      { pitch: 1, rate: 0.95, volume: 1, useApplicationAudioSession: false },
+      { pitch: 1, rate: 0.95, volume: 1, useApplicationAudioSession: true, language },
+      { pitch: 1, rate: 0.95, volume: 1, useApplicationAudioSession: false, language },
+    ];
 
-    try {
-      Speech.speak(text, opts);
-    } catch {
-      try {
-        Speech.speak(text, { volume: 1, rate: 1 });
-      } catch {
+    let i = 0;
+    const tryNext = () => {
+      if (seq !== speakSeq) return;
+      if (i >= attempts.length) {
         try {
           AccessibilityInfo.announceForAccessibility(text);
         } catch {
           /* ignore */
         }
+        return;
       }
-    }
+      const opts = { ...attempts[i++]!, onError: () => tryNext() };
+      try {
+        Speech.speak(text, opts);
+      } catch {
+        tryNext();
+      }
+    };
+    tryNext();
   })();
+}
+
+function speakNow(message: string, lang = 'pl-PL') {
+  const text = message.trim();
+  if (!text) return;
+  speakSeq += 1;
+  const seq = speakSeq;
+
+  if (Platform.OS === 'web') {
+    speakWebFallback(text, lang, seq);
+    return;
+  }
+  speakNative(text, lang);
 }
 
 /** Diagnostyka pod „Test głosu”. */
 export async function testSpeechAsync(
-  message = 'Test głosu. Jeśli to słyszysz, działa.',
+  message = 'Test głosu. Jeśli to słyszysz, odczyt działa.',
 ): Promise<string> {
   const text = message.trim();
   if (Platform.OS === 'web') {
@@ -241,20 +238,29 @@ export async function testSpeechAsync(
 
   let voices: Awaited<ReturnType<typeof Speech.getAvailableVoicesAsync>> = [];
   try {
-    voices = await loadVoices();
+    voicesCache = null;
+    voices = await loadVoices(true);
   } catch (e) {
-    return `expo-speech niedostępne: ${e instanceof Error ? e.message : String(e)}. Zrób reload Expo Go.`;
+    return `expo-speech niedostępne: ${e instanceof Error ? e.message : String(e)}.`;
   }
 
   if (!voices.length) {
-    return 'Brak głosów TTS w systemie. Zainstaluj „Silnik syntezy mowy Google”, włącz język PL, głośność multimediów > 0.';
+    return (
+      'Brak głosów TTS widocznych dla aplikacji. ' +
+      'Ustawienia systemu → Dostępność / Synteza mowy: wybierz DOMYŚLNY silnik ' +
+      '(dowolny: Google, Huawei, Samsung…), pobierz język PL, głośność multimediów > 0. ' +
+      'Google nie jest wymagany.'
+    );
   }
 
   const voice = pickVoice(voices, 'pl');
   const sample = voices
-    .slice(0, 3)
+    .slice(0, 4)
     .map((v) => `${v.name} (${v.language})`)
     .join(', ');
+  const hasPl = voices.some(
+    (v) => v.language?.toLowerCase().startsWith('pl') || /polski|polish/i.test(v.name),
+  );
 
   return await new Promise((resolve) => {
     let settled = false;
@@ -267,25 +273,44 @@ export async function testSpeechAsync(
     const timer = setTimeout(
       () =>
         finish(
-          `TTS wysłany, brak onStart (głosów: ${voices.length}). Sprawdź głośność MULTIMEDIÓW. Przykłady: ${sample}`,
+          `TTS wysłany, brak dźwięku (głosów: ${voices.length}${hasPl ? '' : ', brak PL'}). ` +
+            `Głośność MULTIMEDIÓW + domyślny silnik w ustawieniach. Widoczne: ${sample}`,
         ),
-      3500,
+      4000,
     );
 
-    const opts: Speech.SpeechOptions = {
-      language: Platform.OS === 'android' ? androidLangCode(voice?.language || 'pl') : voice?.language || 'pl-PL',
+    // Test: najpierw goły speak (jak HyperOS lubi), potem z language.
+    const seq = ++speakSeq;
+    const onOk = (how: string) => finish(`OK · ${how} · głosów: ${voices.length} · ${sample}`);
+    const optsBare: Speech.SpeechOptions = {
       pitch: 1,
-      rate: 1,
+      rate: 0.95,
       volume: 1,
-      useApplicationAudioSession: false,
-      onStart: () => finish(`Mówi („${voice?.name || 'default'}”) · głosów: ${voices.length}`),
-      onDone: () => finish(`OK · TTS skończył · głosów: ${voices.length}`),
-      onError: (err) =>
-        finish(
-          `Błąd TTS: ${err?.message || String(err)} · głosów: ${voices.length}. Spróbuj: ${sample}`,
-        ),
+      useApplicationAudioSession: true,
+      onStart: () => onOk('silnik domyślny'),
+      onDone: () => onOk('silnik domyślny (done)'),
+      onError: () => {
+        if (seq !== speakSeq) return;
+        try {
+          Speech.speak(text, {
+            pitch: 1,
+            rate: 0.95,
+            volume: 1,
+            useApplicationAudioSession: false,
+            language: androidLangCode(voice?.language || 'pl'),
+            onStart: () => onOk(`język ${androidLangCode(voice?.language || 'pl')}`),
+            onDone: () => onOk('z language'),
+            onError: (err) =>
+              finish(
+                `Błąd TTS: ${err?.message || String(err)}. Widoczne: ${sample}. ` +
+                  'Ustaw ten silnik jako domyślny w systemie (nie musi być Google).',
+              ),
+          });
+        } catch (e) {
+          finish(`Wyjątek: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      },
     };
-    if (voice?.identifier) opts.voice = voice.identifier;
 
     try {
       void (async () => {
@@ -294,7 +319,7 @@ export async function testSpeechAsync(
         } catch {
           /* ignore */
         }
-        Speech.speak(text, opts);
+        Speech.speak(text, optsBare);
       })();
     } catch (e) {
       finish(`Wyjątek: ${e instanceof Error ? e.message : String(e)}`);
@@ -384,9 +409,29 @@ export function AccessibilityProvider({ children }: { children: ReactNode }) {
     // Rozgrzej silnik TTS (Android init jest lazy)
     void Speech.getAvailableVoicesAsync().catch(() => {});
     AccessibilityInfo.isScreenReaderEnabled()
-      .then(setScreenReader)
+      .then((on) => {
+        setScreenReader(on);
+        if (on) {
+          // Czytnik ekranu: etykiety + ogłoszenia + większe cele (DfA / AT).
+          setPrefs((p) => {
+            const next = {
+              ...p,
+              tabLabels: true,
+              announceChanges: true,
+              largeTouchTargets: p.largeTouchTargets || true,
+            };
+            void AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next)).catch(() => {});
+            return next;
+          });
+        }
+      })
       .catch(() => {});
-    const sub = AccessibilityInfo.addEventListener('screenReaderChanged', setScreenReader);
+    const sub = AccessibilityInfo.addEventListener('screenReaderChanged', (on) => {
+      setScreenReader(on);
+      if (on) {
+        setPrefs((p) => ({ ...p, tabLabels: true, announceChanges: true }));
+      }
+    });
     return () => sub.remove();
   }, []);
 

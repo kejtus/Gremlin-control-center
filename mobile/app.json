@@ -2,7 +2,7 @@
   "expo": {
     "name": "RPilot",
     "slug": "rpilot",
-    "version": "1.0.4",
+    "version": "1.1.2",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -10,12 +10,12 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "dev.rpilot.app",
-      "buildNumber": "5",
+      "buildNumber": "22",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
-        "NSLocalNetworkUsageDescription": "RPilot szuka robota Raspberry Pi w Twojej sieci Wi‑Fi i łączy się z nim przez UDP.",
-        "NSMicrophoneUsageDescription": "RPilot używa mikrofonu, żeby zamienić głos na polecenia dla robota.",
-        "NSSpeechRecognitionUsageDescription": "RPilot rozpoznaje mowę na telefonie, bez komputera.",
+        "NSLocalNetworkUsageDescription": "RPilot łączy się z Raspberry Pi w lokalnej sieci Wi‑Fi (bez internetu).",
+        "NSMicrophoneUsageDescription": "RPilot używa mikrofonu do lokalnego rozpoznawania komend głosowych (offline).",
+        "NSSpeechRecognitionUsageDescription": "RPilot rozpoznaje mowę lokalnie na tablecie, bez internetu.",
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true
         }
@@ -23,7 +23,7 @@
     },
     "android": {
       "package": "dev.rpilot.app",
-      "versionCode": 5,
+      "versionCode": 22,
       "adaptiveIcon": {
         "backgroundColor": "#07090d",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -37,6 +37,7 @@
         "ACCESS_WIFI_STATE",
         "CHANGE_WIFI_MULTICAST_STATE",
         "CHANGE_WIFI_STATE",
+        "NEARBY_WIFI_DEVICES",
         "RECORD_AUDIO",
         "android.permission.RECORD_AUDIO"
       ],
@@ -50,33 +51,37 @@
     },
     "plugins": [
       [
+        "expo-build-properties",
+        {
+          "android": {
+            "newArchEnabled": false,
+            "usesCleartextTraffic": true,
+            "minSdkVersion": 26,
+            "enableProguardInReleaseBuilds": false,
+            "enableShrinkResourcesInReleaseBuilds": false
+          },
+          "ios": {
+            "newArchEnabled": false
+          }
+        }
+      ],
+      [
         "expo-audio",
         {
-          "microphonePermission": "RPilot używa mikrofonu, żeby zamienić głos na polecenia dla robota.",
+          "microphonePermission": "RPilot używa mikrofonu do lokalnego rozpoznawania komend (offline).",
           "recordAudioAndroid": true,
           "enableBackgroundRecording": false,
           "enableBackgroundPlayback": false
         }
       ],
       [
-        "expo-speech-recognition",
+        "react-native-vosk",
         {
-          "microphonePermission": "RPilot używa mikrofonu, żeby zamienić głos na polecenia dla robota.",
-          "speechRecognitionPermission": "RPilot rozpoznaje mowę na telefonie, bez komputera.",
-          "androidSpeechServicePackages": [
-            "com.google.android.googlequicksearchbox",
-            "com.google.android.tts",
-            "com.google.android.as",
-            "com.huawei.hiai",
-            "com.huawei.vassistant",
-            "com.huawei.hwvoicerecognition",
-            "com.hihonor.voice",
-            "com.samsung.android.bixby.agent",
-            "com.miui.voiceassist",
-            "com.xiaomi.mibrain.speech"
-          ]
+          "models": ["assets/model-pl-pl"],
+          "iOSMicrophonePermission": "RPilot używa mikrofonu do lokalnego rozpoznawania komend (offline)."
         }
-      ]
+      ],
+      "./plugins/withSpeechQueries.js"
     ],
     "extra": {
       "eas": {

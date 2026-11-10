@@ -70,8 +70,22 @@ export function Joystick({ size = 196, disabled, value, lockAxis, onChange, onAc
   const cross = prefs.highContrast ? 'rgba(255,204,0,0.35)' : 'rgba(61, 76, 92, 0.22)';
   const ring = prefs.highContrast ? 'rgba(255,204,0,0.45)' : 'rgba(61, 76, 92, 0.28)';
 
+  const a11yName =
+    lockAxis === 'x'
+      ? 'Joystick obrotu. Przesuń w lewo lub w prawo, żeby obrócić robota.'
+      : 'Joystick jazdy. Przesuń w górę, dół, lewo lub prawo, żeby jechać.';
+
   return (
     <View
+      accessible
+      accessibilityRole="adjustable"
+      accessibilityLabel={a11yName}
+      accessibilityHint={
+        disabled
+          ? 'Joystick wyłączony — najpierw połącz z robotem.'
+          : 'Alternatywa: zakładka Głos albo Pad. Awaryjny STOP w stopce lub na środku.'
+      }
+      accessibilityState={{ disabled: !!disabled }}
       style={[
         styles.base,
         {

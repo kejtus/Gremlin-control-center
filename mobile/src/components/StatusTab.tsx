@@ -113,7 +113,7 @@ export function StatusTab({
     );
   };
 
-  const programOn = robotStatus?.programOn !== false;
+  const programOn = robotStatus?.programOn === true;
   const extra: { name: string; text: string; kind: SystemStatusKind }[] = [
     {
       name: 'Program',

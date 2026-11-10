@@ -150,18 +150,44 @@ export function GamepadTab({ onSendPackets, online }: Props) {
 
         <View style={styles.body}>
           <View style={styles.shoulderRow}>
-            <Pressable onPress={() => onFacePress('lt')} onLongPress={() => onFaceLongPress('lt')} style={[styles.shoulder, flash === 'lt' && styles.flash]}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Przycisk LT"
+              accessibilityHint="Krótko: komenda. Przytrzymaj: zmiana przypisania."
+              onPress={() => onFacePress('lt')}
+              onLongPress={() => onFaceLongPress('lt')}
+              style={[styles.shoulder, flash === 'lt' && styles.flash]}
+            >
               <Text style={styles.shoulderText}>LT</Text>
             </Pressable>
-            <Pressable onPress={() => onFacePress('rt')} onLongPress={() => onFaceLongPress('rt')} style={[styles.shoulder, flash === 'rt' && styles.flash]}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Przycisk RT"
+              accessibilityHint="Krótko: komenda. Przytrzymaj: zmiana przypisania."
+              onPress={() => onFacePress('rt')}
+              onLongPress={() => onFaceLongPress('rt')}
+              style={[styles.shoulder, flash === 'rt' && styles.flash]}
+            >
               <Text style={styles.shoulderText}>RT</Text>
             </Pressable>
           </View>
           <View style={styles.shoulderRow}>
-            <Pressable onPress={() => onFacePress('lb')} onLongPress={() => onFaceLongPress('lb')} style={[styles.bumper, flash === 'lb' && styles.flash]}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Przycisk LB"
+              onPress={() => onFacePress('lb')}
+              onLongPress={() => onFaceLongPress('lb')}
+              style={[styles.bumper, flash === 'lb' && styles.flash]}
+            >
               <Text style={styles.shoulderText}>LB</Text>
             </Pressable>
-            <Pressable onPress={() => onFacePress('rb')} onLongPress={() => onFaceLongPress('rb')} style={[styles.bumper, flash === 'rb' && styles.flash]}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Przycisk RB"
+              onPress={() => onFacePress('rb')}
+              onLongPress={() => onFaceLongPress('rb')}
+              style={[styles.bumper, flash === 'rb' && styles.flash]}
+            >
               <Text style={styles.shoulderText}>RB</Text>
             </Pressable>
           </View>
@@ -178,11 +204,25 @@ export function GamepadTab({ onSendPackets, online }: Props) {
             </View>
 
             <View style={styles.midCluster}>
-              <Pressable onPress={() => onFacePress('select')} onLongPress={() => onFaceLongPress('select')} style={[styles.pill, flash === 'select' && styles.flash]}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Przycisk Select"
+                onPress={() => onFacePress('select')}
+                onLongPress={() => onFaceLongPress('select')}
+                style={[styles.pill, flash === 'select' && styles.flash]}
+              >
                 <Text style={styles.pillText}>◉</Text>
               </Pressable>
-              <Text style={styles.brandTiny}>PV58</Text>
-              <Pressable onPress={() => onFacePress('start')} onLongPress={() => onFaceLongPress('start')} style={[styles.pill, flash === 'start' && styles.flash]}>
+              <Text style={styles.brandTiny} accessibilityElementsHidden>
+                PV58
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Przycisk Start"
+                onPress={() => onFacePress('start')}
+                onLongPress={() => onFaceLongPress('start')}
+                style={[styles.pill, flash === 'start' && styles.flash]}
+              >
                 <Text style={styles.pillText}>☰</Text>
               </Pressable>
             </View>
@@ -273,6 +313,9 @@ function FaceBtn({
   const styles = useStyles();
   return (
     <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Przycisk ${label}`}
+      accessibilityHint="Krótko: uruchom przypisaną komendę. Przytrzymaj: wybór funkcji."
       onPress={() => onPress(id)}
       onLongPress={() => onLongPress(id)}
       delayLongPress={380}

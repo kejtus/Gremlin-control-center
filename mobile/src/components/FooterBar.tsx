@@ -46,13 +46,20 @@ export function FooterBar({ percent, onOpenA11y }: Props) {
         >
           <Image
             source={logoGest}
-            style={{ height: layout.footerLogoH, width: layout.footerGestW, flexShrink: 1 }}
+            style={[
+              { height: layout.footerLogoH, width: layout.footerGestW, flexShrink: 1 },
+              prefs.highContrast ? { tintColor: colors.ink } : null,
+            ]}
             resizeMode="contain"
             accessibilityLabel="GEST"
           />
           <Image
             source={logoRobolab}
-            style={{ height: layout.footerRoboH, width: layout.footerRoboW, flexShrink: 1 }}
+            style={[
+              { height: layout.footerRoboH, width: layout.footerRoboW, flexShrink: 1 },
+              // Czarne logo znika na czarnym tle HC → biały/żółty tint
+              prefs.highContrast ? { tintColor: '#ffffff' } : null,
+            ]}
             resizeMode="contain"
             accessibilityLabel="RoboLAB"
           />

@@ -80,6 +80,23 @@ export function AccessibilityPanel({ visible, onClose }: Props) {
     }
   };
 
+  const openTtsSettings = async () => {
+    try {
+      const IntentLauncher = await import('expo-intent-launcher');
+      await IntentLauncher.startActivityAsync('com.android.settings.TTS_SETTINGS');
+    } catch {
+      try {
+        const IntentLauncher = await import('expo-intent-launcher');
+        await IntentLauncher.startActivityAsync('android.settings.TTS_SETTINGS');
+      } catch (e) {
+        setTtsStatus(
+          `Nie otwarto ustawień TTS (${e instanceof Error ? e.message : 'brak'}). ` +
+            'Wejdź ręcznie: Ustawienia → Dostępność → Synteza mowy / Text-to-speech.',
+        );
+      }
+    }
+  };
+
   return (
     <Modal
       visible={visible}
@@ -88,36 +105,40 @@ export function AccessibilityPanel({ visible, onClose }: Props) {
       onRequestClose={onClose}
       accessibilityViewIsModal
     >
-      <Pressable
-        style={styles.backdrop}
-        onPress={onClose}
-        accessibilityLabel="Zamknij ustawienia dostępności"
-      >
-        <Pressable
+      <View style={styles.backdrop}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Zamknij" />
+        <View
           style={[
             styles.sheet,
             {
               borderColor: colors.line,
               backgroundColor: colors.card,
-              maxHeight: layout.height * 0.9,
+              maxHeight: layout.height * 0.92,
             },
           ]}
-          onPress={(e) => e.stopPropagation()}
         >
-          <Text
-            style={[
-              styles.title,
-              { color: colors.ink, fontSize: a11yFont(layout.phone ? 18 : 20, textScale) },
-            ]}
-            accessibilityRole="header"
+          <ScrollView
+            style={styles.scroll}
+            contentContainerStyle={styles.scrollContent}
+            bounces
+            nestedScrollEnabled
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator
           >
-            Dostępność
-          </Text>
-          <Text style={[styles.lead, { color: colors.muted, fontSize: a11yFont(13, textScale) }]}>
-            Odczyt tekstu (TTS) nie wymaga uprawnień. Mikrofon jest tylko do zakładki Głos.
-          </Text>
+            <Text
+              style={[
+                styles.title,
+                { color: colors.ink, fontSize: a11yFont(layout.phone ? 18 : 20, textScale) },
+              ]}
+              accessibilityRole="header"
+            >
+              Dostępność
+            </Text>
+            <Text style={[styles.lead, { color: colors.muted, fontSize: a11yFont(13, textScale) }]}>
+              Lektor: dowolny systemowy TTS (nie musi być Google). Mikrofon w zakładce Głos to Vosk
+              offline.
+            </Text>
 
-          <ScrollView style={styles.list} bounces={false}>
             {ITEMS.map(({ key, title, hint }) => (
               <View key={key} style={[styles.row, { borderBottomColor: colors.line }]}>
                 <View style={styles.rowText} accessible accessibilityRole="text">
@@ -142,74 +163,88 @@ export function AccessibilityPanel({ visible, onClose }: Props) {
                 />
               </View>
             ))}
+
+            <View style={styles.actions}>
+              <Pressable
+                onPress={() => void onTestVoice()}
+                disabled={ttsBusy}
+                style={[
+                  styles.btn,
+                  { backgroundColor: colors.ok, flex: 1.2, opacity: ttsBusy ? 0.7 : 1 },
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="Przetestuj syntezator mowy"
+              >
+                <Text
+                  style={{
+                    color: prefs.highContrast ? '#000' : '#fff',
+                    fontWeight: '800',
+                    fontSize: a11yFont(13, textScale),
+                    textAlign: 'center',
+                  }}
+                >
+                  {ttsBusy ? 'Test…' : 'Test głosu'}
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => void openTtsSettings()}
+                style={[styles.btn, styles.btnGhost, { borderColor: colors.line, flex: 1 }]}
+                accessibilityRole="button"
+                accessibilityLabel="Otwórz ustawienia syntezy mowy w systemie"
+              >
+                <Text
+                  style={{ color: colors.text, fontWeight: '700', fontSize: a11yFont(13, textScale) }}
+                >
+                  TTS w systemie
+                </Text>
+              </Pressable>
+            </View>
+
+            {ttsStatus ? (
+              <Text
+                style={{
+                  color: colors.muted,
+                  fontSize: a11yFont(12, textScale),
+                  lineHeight: Math.round(16 * textScale),
+                  marginTop: 4,
+                }}
+              >
+                {ttsStatus}
+              </Text>
+            ) : null}
+
+            <View style={styles.actions}>
+              <A11yPressable
+                exploreId="a11y-reset"
+                accessibilityLabel="Przywróć domyślne ustawienia dostępności"
+                onPress={() => {
+                  resetPrefs();
+                  announce('Przywrócono domyślne ustawienia dostępności');
+                }}
+                style={[styles.btn, styles.btnGhost, { borderColor: colors.line }]}
+              >
+                <Text style={{ color: colors.text, fontSize: a11yFont(14, textScale) }}>Domyślne</Text>
+              </A11yPressable>
+              <A11yPressable
+                exploreId="a11y-done"
+                accessibilityLabel="Zamknij panel dostępności"
+                onPress={onClose}
+                style={[styles.btn, { backgroundColor: colors.accent }]}
+              >
+                <Text
+                  style={{
+                    color: prefs.highContrast ? '#000' : '#fff',
+                    fontWeight: '800',
+                    fontSize: a11yFont(14, textScale),
+                  }}
+                >
+                  Gotowe
+                </Text>
+              </A11yPressable>
+            </View>
           </ScrollView>
-
-          <View style={styles.actions}>
-            <Pressable
-              onPress={() => void onTestVoice()}
-              disabled={ttsBusy}
-              style={[
-                styles.btn,
-                { backgroundColor: colors.ok, flex: 1.2, opacity: ttsBusy ? 0.7 : 1 },
-              ]}
-              accessibilityRole="button"
-              accessibilityLabel="Przetestuj syntezator mowy"
-            >
-              <Text
-                style={{
-                  color: prefs.highContrast ? '#000' : '#fff',
-                  fontWeight: '800',
-                  fontSize: a11yFont(13, textScale),
-                  textAlign: 'center',
-                }}
-              >
-                {ttsBusy ? 'Test…' : 'Test głosu'}
-              </Text>
-            </Pressable>
-          </View>
-          {ttsStatus ? (
-            <Text
-              style={{
-                color: colors.muted,
-                fontSize: a11yFont(12, textScale),
-                lineHeight: Math.round(16 * textScale),
-              }}
-            >
-              {ttsStatus}
-            </Text>
-          ) : null}
-
-          <View style={styles.actions}>
-            <A11yPressable
-              exploreId="a11y-reset"
-              accessibilityLabel="Przywróć domyślne ustawienia dostępności"
-              onPress={() => {
-                resetPrefs();
-                announce('Przywrócono domyślne ustawienia dostępności');
-              }}
-              style={[styles.btn, styles.btnGhost, { borderColor: colors.line }]}
-            >
-              <Text style={{ color: colors.text, fontSize: a11yFont(14, textScale) }}>Domyślne</Text>
-            </A11yPressable>
-            <A11yPressable
-              exploreId="a11y-done"
-              accessibilityLabel="Zamknij panel dostępności"
-              onPress={onClose}
-              style={[styles.btn, { backgroundColor: colors.accent }]}
-            >
-              <Text
-                style={{
-                  color: prefs.highContrast ? '#000' : '#fff',
-                  fontWeight: '800',
-                  fontSize: a11yFont(14, textScale),
-                }}
-              >
-                Gotowe
-              </Text>
-            </A11yPressable>
-          </View>
-        </Pressable>
-      </Pressable>
+        </View>
+      </View>
     </Modal>
   );
 }
@@ -224,18 +259,24 @@ const styles = StyleSheet.create({
   sheet: {
     borderRadius: radii.lg,
     borderWidth: 3,
+    overflow: 'hidden',
+    zIndex: 2,
+  },
+  scroll: {
+    flexGrow: 0,
+  },
+  scrollContent: {
     padding: 16,
-    gap: 8,
+    paddingBottom: 24,
+    gap: 4,
   },
   title: {
     fontWeight: '800',
+    marginBottom: 4,
   },
   lead: {
     lineHeight: 18,
-    marginBottom: 4,
-  },
-  list: {
-    maxHeight: 440,
+    marginBottom: 8,
   },
   row: {
     flexDirection: 'row',
@@ -257,7 +298,7 @@ const styles = StyleSheet.create({
   actions: {
     flexDirection: 'row',
     gap: 10,
-    marginTop: 8,
+    marginTop: 12,
   },
   btn: {
     flex: 1,
